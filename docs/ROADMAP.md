@@ -32,10 +32,11 @@ Deferred to later phases on purpose: agent/tool CRUD endpoints (only one seeded 
 
 ## Phase 2 — Adversarial & regression test suite
 
-- [ ] Routine test cases (see `docs/EVALUATION.md`)
-- [ ] Adversarial test cases (prompt injection, spoofed identity, duplicate call, replayed approval, gateway bypass, prohibited prod access, wrong-tenant approver)
-- [ ] Metrics collection: false-allow/false-deny rate, audit completeness, duplicate side-effect rate
-- [ ] CI wiring to run the suite on policy/tool/prompt changes
+- [x] Routine test cases (see `docs/EVALUATION.md`) — `src/agentguard/evaluation/cases.py`
+- [x] Adversarial test cases (prompt injection, spoofed identity, duplicate call, replayed approval, prohibited prod access, wrong-tenant/wrong-role approver, policy change during pending approval)
+- [ ] Gateway bypass case — needs a real deployment boundary (network/credential inventory) to test meaningfully; deferred to Phase 4 alongside credential inventory
+- [x] Metrics collection: false-allow/false-deny rate, audit completeness, duplicate side-effect rate, per-case p95 latency — `python -m agentguard.evaluation.runner`
+- [x] CI wiring (`.github/workflows/ci.yml`): lint + pytest + evaluation gate on every push/PR; fails if false-allow > 0 or any routine case regresses; uploads the JSON report as an artifact
 
 ## Phase 3 — Replay & counterfactual simulation
 
@@ -58,4 +59,4 @@ Deferred to later phases on purpose: agent/tool CRUD endpoints (only one seeded 
 
 ## Status
 
-Phase 0 and Phase 1 complete. Next up: Phase 2 — adversarial & regression test suite wired into CI (the test cases themselves already exist under `tests/adversarial/`; CI wiring and the metrics dashboard are what's left).
+Phases 0–2 complete (except the gateway-bypass case, deferred to Phase 4). Next up: Phase 3 — deterministic replay and counterfactual policy simulation.

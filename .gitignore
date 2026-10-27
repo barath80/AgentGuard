@@ -7,4 +7,5 @@ venv/
 .ruff_cache/
 .env
 *.db
+evaluation-report.json
 .DS_Store

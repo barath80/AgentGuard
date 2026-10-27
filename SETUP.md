@@ -70,6 +70,17 @@ Schema is managed with Alembic (`migrations/`), driven off the SQLAlchemy models
 
 Note: running the app directly with `uvicorn` (Option A) also creates tables itself on startup via `Base.metadata.create_all` as a dev convenience and seeds the mock fixtures (`src/agentguard/policy/seed.py`). That path is for local iteration only — real deployments should rely on Alembic migrations, not on this auto-create behavior.
 
+## Evaluation suite
+
+Runs every routine and adversarial case from `docs/EVALUATION.md` against a throwaway database and prints the metrics (false-allow rate, false-deny rate, audit completeness, duplicate side-effect rate, latency):
+
+```
+python -m agentguard.evaluation.runner
+python -m agentguard.evaluation.runner --json evaluation-report.json   # also save as JSON
+```
+
+Exits with code 1 if any attack succeeds or any routine case regresses. CI (`.github/workflows/ci.yml`) runs this on every push and PR, after lint and `pytest`.
+
 ## Linting
 
 ```
