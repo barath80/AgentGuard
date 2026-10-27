@@ -1,45 +1,44 @@
 """Mock tool executors.
 
-Stand in for real external systems. Each executor gets only the
-arguments it needs — never a raw credential the agent could have
-supplied — and simulates a plausible result. Real integrations would
-each hold their own narrowly-scoped credential, injected here by the
-broker, not by the agent.
+Each executor declares the single scope it needs; the broker hands it a
+credential for that scope only, never anything the agent supplied. A
+compromised or confused executor for refunds therefore cannot create
+tickets, and vice versa.
 """
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
-from agentguard.mock_systems import TICKETS
+from agentguard import mock_systems
 
-ExecutorFn = Callable[[dict[str, Any]], dict[str, Any]]
+RunFn = Callable[[dict[str, Any], str, str], dict[str, Any]]  # (args, credential, idempotency_key)
 
 
-def read_ticket(args: dict[str, Any]) -> dict[str, Any]:
-    ticket_id = args["ticket_id"]
-    ticket = TICKETS.get(ticket_id)
+@dataclass(frozen=True)
+class Executor:
+    run: RunFn
+    scope: str
+    writes: bool  # whether a call can change external state (and so needs reconciliation)
+
+
+def _read_ticket(args: dict[str, Any], credential: str, _key: str) -> dict[str, Any]:
+    ticket = mock_systems.get_ticket(credential, args["ticket_id"])
     if ticket is None:
-        return {"found": False, "ticket_id": ticket_id}
+        return {"found": False, "ticket_id": args["ticket_id"]}
     return {"found": True, **ticket}
 
 
-def create_ticket(args: dict[str, Any]) -> dict[str, Any]:
-    ticket_id = f"T-{1000 + len(TICKETS) + 1}"
-    ticket = {"ticket_id": ticket_id, "subject": args["subject"], "status": "open"}
-    TICKETS[ticket_id] = ticket
-    return {"created": True, **ticket}
+def _create_ticket(args: dict[str, Any], credential: str, key: str) -> dict[str, Any]:
+    return mock_systems.create_ticket(credential, key, args["subject"])
 
 
-def issue_refund(args: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "refunded": True,
-        "ticket_id": args.get("ticket_id"),
-        "amount": args["amount"],
-    }
+def _issue_refund(args: dict[str, Any], credential: str, key: str) -> dict[str, Any]:
+    return mock_systems.issue_refund(credential, key, args.get("ticket_id"), args["amount"])
 
 
-EXECUTORS: dict[str, ExecutorFn] = {
-    "mock.read_ticket": read_ticket,
-    "mock.create_ticket": create_ticket,
-    "mock.issue_refund": issue_refund,
+EXECUTORS: dict[str, Executor] = {
+    "mock.read_ticket": Executor(_read_ticket, "tickets:read", writes=False),
+    "mock.create_ticket": Executor(_create_ticket, "tickets:write", writes=True),
+    "mock.issue_refund": Executor(_issue_refund, "billing:refund", writes=True),
 }

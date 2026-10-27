@@ -9,6 +9,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
+from agentguard.db import read_only_session
 from agentguard.gateway import service as gateway_service
 from agentguard.gateway.schemas import ToolCallRequest
 from agentguard.identity.service import resolve_identity
@@ -16,7 +17,6 @@ from agentguard.mock_systems import TICKETS
 from agentguard.models import Approval, AuditEvent, Execution, Policy
 from agentguard.policy.engine import RuleSpec
 from agentguard.policy.seed import MOCK_AGENT_WORKLOAD_REF
-from agentguard.replay.cli import read_only_session
 from agentguard.replay.service import load_policy_file, replay, simulate
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

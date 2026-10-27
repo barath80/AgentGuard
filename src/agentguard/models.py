@@ -8,7 +8,7 @@ keep the schema portable between SQLite (tests) and Postgres (runtime).
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from agentguard.db import Base
@@ -33,6 +33,11 @@ class Agent(Base):
     status: Mapped[str] = mapped_column(String, nullable=False, default="active")
     approved_environments: Mapped[list] = mapped_column(JSON, default=list)
     risk_category: Mapped[str] = mapped_column(String, nullable=False, default="medium")
+    rate_limit_per_minute: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=60, server_default="60"
+    )
+    # Max total of tools' `spend_arg` values per rolling 24h; None means no budget.
+    daily_spend_limit: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
@@ -49,6 +54,8 @@ class Tool(Base):
     risk_class: Mapped[str] = mapped_column(String, nullable=False)
     target_scope: Mapped[str] = mapped_column(String, nullable=False)
     executor_ref: Mapped[str] = mapped_column(String, nullable=False)
+    # Argument that counts against an agent's spend budget (e.g. "amount"), if any.
+    spend_arg: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
@@ -122,6 +129,10 @@ class Execution(Base):
     executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     outcome: Mapped[str] = mapped_column(String, nullable=False, default="not_attempted")
+    # Why a call was denied or didn't complete normally. Runtime-control denials are
+    # prefixed "control:" so the circuit breaker doesn't count its own denials and
+    # lock an agent out forever.
+    reason: Mapped[str | None] = mapped_column(String, nullable=True)
     safe_request_ref: Mapped[str | None] = mapped_column(String, nullable=True)
     safe_result_ref: Mapped[str | None] = mapped_column(String, nullable=True)
     trace_complete: Mapped[bool] = mapped_column(Boolean, default=False)

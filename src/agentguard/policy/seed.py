@@ -8,9 +8,29 @@ from sqlalchemy.orm import Session
 from agentguard.models import Agent, Policy, PolicyRule, Tool
 
 REFUND_THRESHOLD = 500
+MOCK_AGENT_DAILY_SPEND_LIMIT = 5000
 
 MOCK_AGENT_WORKLOAD_REF = "mock-support-agent@dev-workload-pool"
 MOCK_APPROVER_ROLE = "support-lead"
+
+
+def register_agent(session: Session, workload_identity_ref: str, **overrides) -> Agent:
+    """Register an extra synthetic agent (defaults mirror the mock support agent)."""
+    fields = {
+        "name": workload_identity_ref.split("@")[0],
+        "owner": "support-eng",
+        "tenant_id": "tenant-a",
+        "status": "active",
+        "approved_environments": ["dev", "staging"],
+        "risk_category": "medium",
+        "rate_limit_per_minute": 60,
+        "daily_spend_limit": MOCK_AGENT_DAILY_SPEND_LIMIT,
+        **overrides,
+    }
+    agent = Agent(workload_identity_ref=workload_identity_ref, **fields)
+    session.add(agent)
+    session.commit()
+    return agent
 
 
 def seed(session: Session) -> None:
@@ -36,6 +56,7 @@ def seed(session: Session) -> None:
         risk_class="write-high",
         target_scope="billing",
         executor_ref="mock.issue_refund",
+        spend_arg="amount",
         input_schema={
             "type": "object",
             "properties": {"ticket_id": {"type": "string"}, "amount": {"type": "number"}},
@@ -51,6 +72,8 @@ def seed(session: Session) -> None:
         status="active",
         approved_environments=["dev", "staging"],
         risk_category="medium",
+        rate_limit_per_minute=60,
+        daily_spend_limit=MOCK_AGENT_DAILY_SPEND_LIMIT,
     )
     session.add(agent)
 

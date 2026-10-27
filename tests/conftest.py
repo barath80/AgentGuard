@@ -6,7 +6,9 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from agentguard import models  # noqa: F401 - registers tables on Base.metadata
 from agentguard.db import Base
-from agentguard.policy.seed import seed
+from agentguard.gateway.schemas import ToolCallRequest
+from agentguard.identity.service import ResolvedIdentity, resolve_identity
+from agentguard.policy.seed import register_agent, seed
 
 
 @pytest.fixture()
@@ -25,3 +27,28 @@ def session(tmp_path) -> Session:
     finally:
         db_session.close()
         engine.dispose()
+
+
+@pytest.fixture()
+def make_agent(session: Session):
+    """Register a fresh agent and return its resolved identity."""
+
+    def _make(**overrides) -> ResolvedIdentity:
+        ref = f"test-agent-{uuid.uuid4().hex[:8]}@dev-workload-pool"
+        register_agent(session, ref, **overrides)
+        return resolve_identity(session, ref)
+
+    return _make
+
+
+def tool_call(tool: str = "read-ticket", args: dict | None = None, **overrides) -> ToolCallRequest:
+    fields = {
+        "tool_name": tool,
+        "environment": "dev",
+        "resource_tenant_id": "tenant-a",
+        "target_resource": "ticket:T-1001",
+        "args": args if args is not None else {"ticket_id": "T-1001"},
+        "idempotency_key": str(uuid.uuid4()),
+        **overrides,
+    }
+    return ToolCallRequest(**fields)

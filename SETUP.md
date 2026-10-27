@@ -57,9 +57,17 @@ Copy `.env.example` to `.env` and adjust if needed — defaults work for both op
 | Variable | Default | Notes |
 |---|---|---|
 | `DATABASE_URL` | `postgresql+psycopg://agentguard:agentguard@localhost:5432/agentguard` in `.env.example`; falls back to `sqlite:///./agentguard.db` if unset | Native/SQLite runs can just leave `.env` absent or unset this |
-| `REDIS_URL` | `redis://localhost:6379/0` | Not yet consumed by any code path (reserved for Phase 4 event processing) |
+| `REDIS_URL` | `redis://localhost:6379/0` | Not consumed by any code path yet — runtime controls derive their state from the trace in the database |
 | `ENVIRONMENT` | `development` | |
 | `APPROVAL_DEFAULT_EXPIRY_SECONDS` | `900` | How long a pending approval stays valid before it expires |
+| `KILL_SWITCH` | `false` | `true` denies every tool call for every agent (needs a restart; to stop one agent immediately, suspend it instead — see below) |
+| `ALLOW_READS_WHEN_POLICY_UNAVAILABLE` | `false` | The only fail-open: if policy evaluation errors, still allow `read`-class tools. Writes are always denied |
+| `BROKER_TIMEOUT_SECONDS` | `5` | Per-call deadline for tool execution |
+| `BREAKER_THRESHOLD` / `BREAKER_WINDOW_SECONDS` | `5` / `300` | Denials within the window that open an agent's circuit |
+| `OPERATOR_TOKEN` | unset (`dev-only-operator-token` in `.env.example`) | Required for `/v1/stats`; unset disables the endpoint |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | Enables OpenTelemetry trace export over OTLP/HTTP, e.g. `http://localhost:4318` |
+
+Per-agent limits (`rate_limit_per_minute`, `daily_spend_limit`) are columns on the agent record, set when the agent is registered (see `register_agent` in `src/agentguard/policy/seed.py`).
 
 ## Database migrations
 
@@ -97,6 +105,28 @@ Both commands read recorded traces from `DATABASE_URL` (override with `--databas
    ```
 
 Proposed policies are JSON files in `policies/proposed/` — see the example file for the format (`version`, plus `rules` with `match`, `decision`, `priority`, and optional `approval_role`).
+
+## Operator controls and monitoring
+
+```
+python -m agentguard.controls.cli anomalies                                     # read-only report
+python -m agentguard.controls.cli suspend mock-support-agent@dev-workload-pool  # blocks its next call
+python -m agentguard.controls.cli resume  mock-support-agent@dev-workload-pool
+```
+
+Stats for operators (needs `OPERATOR_TOKEN` set on the server):
+
+```
+curl -H "x-operator-token: dev-only-operator-token" http://localhost:8000/v1/stats
+```
+
+Tracing with Jaeger (Docker):
+
+```
+OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318 docker compose --profile observability up -d --build
+```
+
+Then open `http://localhost:16686` and pick the `agentguard-gateway` service. Each tool call is one trace: `agentguard.tool_call` → `agentguard.policy.evaluate` → `agentguard.broker.execute`. For a native run, start Jaeger the same way and set `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318` before `uvicorn`.
 
 ## Linting
 

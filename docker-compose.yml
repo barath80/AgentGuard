@@ -31,6 +31,9 @@ services:
       DATABASE_URL: postgresql+psycopg://agentguard:agentguard@postgres:5432/agentguard
       REDIS_URL: redis://redis:6379/0
       ENVIRONMENT: development
+      OPERATOR_TOKEN: dev-only-operator-token
+      # Empty disables tracing; set it to http://jaeger:4318 when running with --profile observability.
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     ports:
       - "8000:8000"
     depends_on:
@@ -38,6 +41,15 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    profiles: ["observability"]
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"  # trace UI
+      - "4318:4318"    # OTLP/HTTP
 
 volumes:
   agentguard_pg_data:

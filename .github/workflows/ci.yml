@@ -20,6 +20,12 @@ jobs:
       - name: Lint
         run: ruff check .
 
+      - name: Migrations apply and match the models
+        run: |
+          alembic upgrade head
+          alembic check
+          rm -f agentguard.db
+
       - name: Unit and adversarial tests
         run: pytest -q
 

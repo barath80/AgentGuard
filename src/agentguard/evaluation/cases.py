@@ -13,12 +13,19 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.orm import Session
 
+from agentguard import mock_systems
 from agentguard.approval import service as approval_service
+from agentguard.config import settings
 from agentguard.gateway import service as gateway_service
 from agentguard.gateway.schemas import ToolCallRequest
 from agentguard.identity.service import IdentityError, resolve_identity
 from agentguard.models import Approval, Execution, Policy
-from agentguard.policy.seed import MOCK_AGENT_WORKLOAD_REF, MOCK_APPROVER_ROLE, REFUND_THRESHOLD
+from agentguard.policy.seed import (
+    MOCK_AGENT_WORKLOAD_REF,
+    MOCK_APPROVER_ROLE,
+    REFUND_THRESHOLD,
+    register_agent,
+)
 
 
 @dataclass(frozen=True)
@@ -233,6 +240,57 @@ def policy_change_during_pending_approval(session: Session) -> CaseResult:
     return outcome
 
 
+def _fresh_agent(session: Session, **overrides):
+    ref = f"eval-{uuid.uuid4().hex[:8]}@dev-workload-pool"
+    register_agent(session, ref, **overrides)
+    return resolve_identity(session, ref)
+
+
+def _read_request(**overrides) -> ToolCallRequest:
+    fields = {
+        "tool_name": "read-ticket",
+        "environment": "dev",
+        "resource_tenant_id": "tenant-a",
+        "target_resource": "ticket:T-1001",
+        "args": {"ticket_id": "T-1001"},
+        "idempotency_key": _key(),
+    }
+    fields.update(overrides)
+    return ToolCallRequest(**fields)
+
+
+def gateway_bypass_without_credential(session: Session) -> CaseResult:
+    """An agent that skips the gateway and calls the target directly holds no valid credential."""
+    try:
+        mock_systems.issue_refund(None, _key(), "T-1001", 10_000)
+    except mock_systems.Unauthorized as exc:
+        return CaseResult("gateway_bypass_without_credential", "adversarial", False, True, str(exc))
+    return CaseResult("gateway_bypass_without_credential", "adversarial", False, False, "direct refund accepted")
+
+
+def tool_call_spam(session: Session) -> CaseResult:
+    agent = _fresh_agent(session, rate_limit_per_minute=5)
+    decisions = [gateway_service.submit_tool_call(session, _read_request(), agent).decision for _ in range(10)]
+    passed = decisions.count("allow") == 5
+    return CaseResult("tool_call_spam", "adversarial", False, passed, f"{decisions.count('allow')}/10 allowed")
+
+
+def spend_budget_overrun(session: Session) -> CaseResult:
+    agent = _fresh_agent(session, daily_spend_limit=1000)
+    outcomes = [gateway_service.submit_tool_call(session, _refund_request(300), agent).outcome for _ in range(5)]
+    refunded = 300 * outcomes.count("success")
+    return CaseResult("spend_budget_overrun", "adversarial", False, refunded <= 1000, f"refunded {refunded} of 1000")
+
+
+def repeated_denials_open_circuit(session: Session) -> CaseResult:
+    agent = _fresh_agent(session)
+    for _ in range(settings.breaker_threshold):
+        gateway_service.submit_tool_call(session, _read_request(resource_tenant_id="tenant-b"), agent)
+    after = gateway_service.submit_tool_call(session, _read_request(), agent)
+    passed = after.decision == "deny" and (after.reason or "").startswith("control:circuit_open")
+    return CaseResult("repeated_denials_open_circuit", "adversarial", False, passed, after.reason or after.decision)
+
+
 CaseFn = Callable[[Session], CaseResult]
 
 ROUTINE_CASES: list[CaseFn] = [
@@ -252,4 +310,8 @@ ADVERSARIAL_CASES: list[CaseFn] = [
     wrong_tenant_approver,
     wrong_role_approver,
     policy_change_during_pending_approval,
+    gateway_bypass_without_credential,
+    tool_call_spam,
+    spend_budget_overrun,
+    repeated_denials_open_circuit,
 ]

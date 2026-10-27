@@ -33,7 +33,9 @@ See [SETUP.md](SETUP.md) for full steps (native venv+SQLite or Docker Compose). 
 - `src/agentguard/identity/` — workload identity verification (OIDC/OAuth in later phases; mocked claims in Phase 1).
 - `src/agentguard/policy/` — versioned rule evaluation (allow/deny/approval-required).
 - `src/agentguard/approval/` — approval state machine (Postgres-backed).
-- `src/agentguard/broker/` — scoped execution of approved tool calls, idempotency, timeout handling.
+- `src/agentguard/broker/` — scoped execution of approved tool calls, idempotency, timeout handling and reconciliation. The only package allowed to import `broker/credentials.py` (enforced by `tests/test_broker.py`).
+- `src/agentguard/controls/` — runtime controls (kill switch, suspend, rate limit, budget, circuit breaker), anomaly report, operator CLI.
+- `src/agentguard/mock_systems.py` — the fake target systems; they enforce credential scopes and idempotency like a real API would.
 - `src/agentguard/audit/` — append-only decision/outcome log.
 - `src/agentguard/sdk/` — client adapter agents use to call through the gateway.
 - `src/agentguard/evaluation/` — routine/adversarial cases and the metrics runner that gates CI.

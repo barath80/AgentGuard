@@ -47,17 +47,22 @@ Deferred to later phases on purpose: agent/tool CRUD endpoints (only one seeded 
 
 ## Phase 4 — Resilience & observability
 
-- [ ] Fail-closed behavior on policy-service unreachability (documented fallback scope)
-- [ ] Rate limits/budgets/circuit breaker/kill switch
-- [ ] Anomaly detection (repeated denials, call spikes, unusual sequences)
-- [ ] OpenTelemetry instrumentation + dashboard
-- [ ] Broker timeout/state reconciliation
+- [x] Fail closed when policy evaluation errors: deny everything by default; the only fallback (`ALLOW_READS_WHEN_POLICY_UNAVAILABLE`, off by default) allows `read`-class tools and never writes. Approved calls aren't executed during an outage either.
+- [x] Runtime controls (`src/agentguard/controls/`), derived from the trace rather than separate counters: global kill switch (`KILL_SWITCH`), per-agent suspend/resume (effective on the next call), per-agent rate limit, rolling 24h spend budget (re-checked when approved calls execute), and a circuit breaker on repeated denials that ignores its own denials
+- [x] Anomaly report (`python -m agentguard.controls.cli anomalies`): denial bursts, control denials (spikes, budget overruns, open circuits), refunds without a prior read of the ticket, unresolved timeouts
+- [x] OpenTelemetry tracing (tool call → policy → broker spans; no payloads in attributes), Jaeger under the `observability` Compose profile, and an operator-only `/v1/stats` endpoint (decision latency p50/p95, trace completeness, denials by reason, pending approvals)
+- [x] Broker timeouts return immediately (previously the worker thread blocked the response — a Phase 1 bug), and timed-out writes are reconciled against the target system's idempotency record, including when the agent retries with the same key; never re-executed
+- [x] Least-privilege credentials: one scope per executor, enforced by the target system; only `agentguard.broker` can obtain them (static inventory test), and the agent SDK never loads the broker
+- [x] Gateway-bypass evaluation case (moved from Phase 2)
+- [ ] Real deployment isolation for bypass prevention: broker as a separate service/container holding the secrets, with network policy so only it can reach targets. In-process, the credential inventory is a code-level guarantee, not a runtime one.
+- [ ] A late-landing write that reconciliation hasn't observed yet stays `timeout` until the agent retries with the same key; if the agent instead retries with a *new* key, a duplicate is still possible. Needs downstream idempotency keyed on the business action, or an operator workflow for unresolved timeouts (they're surfaced in stats and the anomaly report).
 
 ## Phase 5 — Experiment & writeup
 
 - [ ] Direct-access vs. gateway-enforced comparison (latency + security delta)
 - [ ] Final threat-model pass: every row in `docs/THREAT_MODEL.md` has a corresponding test case
+- [ ] Gaps found during the Phase 4 threat-model review: validate tool arguments against `input_schema` and reject unknown fields (#13); separate DB role without UPDATE/DELETE on `audit_events` (#8); multi-step workflow grouping and partial-completion reporting (#18)
 
 ## Status
 
-Phases 0–3 complete (gateway-bypass case and risk-category snapshotting still open). Next up: Phase 4 — fail-closed outage handling, budgets/rate limits/kill switch, OpenTelemetry, broker reconciliation.
+Phases 0–4 complete. Open follow-ups: risk-category snapshotting (Phase 3), deployment-level bypass isolation and the new-key-after-timeout duplicate window (Phase 4). Next up: Phase 5 — direct-access vs. gateway comparison and the final threat-model pass.

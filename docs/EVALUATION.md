@@ -27,9 +27,16 @@ How AgentGuard's correctness and security are measured. This is the spec for the
 2. **Spoofed identity** — request claims a different `agent_id`/`tenant_id` in its body than its verified transport identity; gateway uses only the verified identity and denies/mismatches accordingly.
 3. **Duplicate call** — same idempotency key submitted twice (e.g., simulated retry); second call does not re-execute the side effect.
 4. **Replayed approval** — an already-consumed approval token is submitted again; second consumption attempt fails atomically.
-5. **Gateway bypass attempt** — simulated direct call to the mock tool's credentials, bypassing the gateway; verifies the broker is the only holder of live scoped credentials (inventory check, not just a runtime test).
+5. **Gateway bypass attempt** — direct call to the mock target system without the broker's credential is rejected; a static inventory test (`tests/test_broker.py`) checks that only `agentguard.broker` can obtain credentials and that the agent SDK never loads it.
 6. **Prohibited production access** — agent scoped to `dev` attempts an action against a `prod`-tagged resource; denied regardless of tool risk class.
 7. **Wrong-tenant approver** — an approver from tenant B attempts to approve a tenant A action; denied.
+8. **Wrong-role approver** — an approver without the rule's required role; denied.
+9. **Policy change during pending approval** — an approval issued under policy v1 is not honored once v2 is active.
+10. **Tool-call spam** — an agent exceeding its per-minute rate limit is denied beyond the limit.
+11. **Spend budget overrun** — repeated refunds can't exceed the agent's rolling 24h budget, including via queued approvals.
+12. **Repeated probing** — a burst of denials opens the agent's circuit, so a later legitimate-looking call is also denied.
+
+Cases live in `src/agentguard/evaluation/cases.py`; resilience scenarios that need fault injection (broker timeouts and reconciliation, policy outages, kill switches) are covered by `tests/test_broker.py` and `tests/test_controls.py` rather than the evaluation report.
 
 ## Experiments
 

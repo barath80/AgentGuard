@@ -11,26 +11,11 @@ import argparse
 import sys
 from pathlib import Path
 
-from sqlalchemy import create_engine, event
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session
 
 from agentguard.config import settings
+from agentguard.db import close_session, read_only_session
 from agentguard.replay.service import load_policy_file, replay, simulate
-
-
-def read_only_session(database_url: str) -> Session:
-    engine = create_engine(database_url)
-
-    @event.listens_for(engine, "connect")
-    def _enforce_read_only(dbapi_conn, _record):
-        cursor = dbapi_conn.cursor()
-        if engine.dialect.name == "sqlite":
-            cursor.execute("PRAGMA query_only = ON")
-        elif engine.dialect.name == "postgresql":
-            cursor.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")
-        cursor.close()
-
-    return sessionmaker(bind=engine)()
 
 
 def _cmd_simulate(session: Session, args: argparse.Namespace) -> int:
@@ -85,9 +70,7 @@ def main(argv: list[str] | None = None) -> int:
         handler = _cmd_simulate if args.command == "simulate" else _cmd_replay
         return handler(session, args)
     finally:
-        engine = session.get_bind()
-        session.close()
-        engine.dispose()
+        close_session(session)
 
 
 if __name__ == "__main__":
