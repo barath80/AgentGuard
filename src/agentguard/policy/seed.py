@@ -59,7 +59,11 @@ def seed(session: Session) -> None:
         spend_arg="amount",
         input_schema={
             "type": "object",
-            "properties": {"ticket_id": {"type": "string"}, "amount": {"type": "number"}},
+            "properties": {
+                "ticket_id": {"type": "string"},
+                "amount": {"type": "number"},
+                "note": {"type": "string"},
+            },
         },
     )
     session.add_all([read_ticket, create_ticket, issue_refund])

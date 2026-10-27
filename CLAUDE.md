@@ -8,7 +8,7 @@ Guidance for Claude Code sessions working in this repository.
 
 ## What this project is
 
-AgentGuard is a runtime authorization, audit, and replay gateway for AI agent tool calls. The core claim it proves: **authorization must be enforced outside the model**, at the point a tool actually executes — not by trusting the agent's prompt or self-reported identity. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the layered design, [docs/DATA_MODEL.md](docs/DATA_MODEL.md) for schemas, [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) for the edge cases this system defends against, [docs/EVALUATION.md](docs/EVALUATION.md) for how it's measured, and [docs/ROADMAP.md](docs/ROADMAP.md) for build phases and current status.
+AgentGuard is a runtime authorization, audit, and replay gateway for AI agent tool calls. The core claim it proves: **authorization must be enforced outside the model**, at the point a tool actually executes — not by trusting the agent's prompt or self-reported identity. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the layered design, [docs/DATA_MODEL.md](docs/DATA_MODEL.md) for schemas, [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) for the edge cases this system defends against, [docs/EVALUATION.md](docs/EVALUATION.md) for how it's measured, [docs/EXPERIMENT.md](docs/EXPERIMENT.md) for the direct-access-vs-gateway comparison, and [docs/ROADMAP.md](docs/ROADMAP.md) for build phases and current status.
 
 ## Non-negotiable invariants
 

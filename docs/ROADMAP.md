@@ -59,10 +59,12 @@ Deferred to later phases on purpose: agent/tool CRUD endpoints (only one seeded 
 
 ## Phase 5 — Experiment & writeup
 
-- [ ] Direct-access vs. gateway-enforced comparison (latency + security delta)
-- [ ] Final threat-model pass: every row in `docs/THREAT_MODEL.md` has a corresponding test case
-- [ ] Gaps found during the Phase 4 threat-model review: validate tool arguments against `input_schema` and reject unknown fields (#13); separate DB role without UPDATE/DELETE on `audit_events` (#8); multi-step workflow grouping and partial-completion reporting (#18)
+- [x] Direct-access vs. gateway-enforced comparison (latency + security delta) — `python -m agentguard.evaluation.comparison_cli`, written up in [docs/EXPERIMENT.md](EXPERIMENT.md). Result: 5/5 security scenarios blocked, with an honestly-caveated latency cost (dominated by SQLite commit overhead in-process, not policy evaluation — Postgres comparison not yet run, needs Docker)
+- [x] Schema validation against `input_schema`: unexpected arguments rejected on `write-high`/`destructive` tools (THREAT_MODEL #13) — `src/agentguard/gateway/validation.py`
+- [x] Audit log hardening: `sql/postgres_audit_role.sql` revokes UPDATE/DELETE/TRUNCATE on `audit_events` from the app's DB role for production Postgres (THREAT_MODEL #8). Not applied to SQLite dev/test (no equivalent grant model)
+- [ ] Multi-step workflow grouping and partial-completion reporting (THREAT_MODEL #18) — deferred: none of the 3 mock tools have a real compensating action, so building this now would be speculative rather than tested against a real need
+- [ ] Final threat-model pass confirming every row has a test case — done for all rows except #17 (clock skew: only one clock is recorded, not cross-checked) and #18 above
 
 ## Status
 
-Phases 0–4 complete. Open follow-ups: risk-category snapshotting (Phase 3), deployment-level bypass isolation and the new-key-after-timeout duplicate window (Phase 4). Next up: Phase 5 — direct-access vs. gateway comparison and the final threat-model pass.
+Phases 0–5 mostly complete. Remaining, by design rather than oversight: real network/credential isolation for gateway bypass (Phase 4), the new-idempotency-key-after-timeout duplicate window (Phase 4), a live Postgres latency comparison (Phase 5, needs Docker), multi-step workflow support (Phase 5, no current tool needs it), and risk-category snapshotting in traces (Phase 3). None of these block the system from working correctly for the 3-tool demo scope; each is called out in `docs/THREAT_MODEL.md` or above rather than silently left out.

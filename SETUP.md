@@ -106,6 +106,10 @@ Both commands read recorded traces from `DATABASE_URL` (override with `--databas
 
 Proposed policies are JSON files in `policies/proposed/` — see the example file for the format (`version`, plus `rules` with `match`, `decision`, `priority`, and optional `approval_role`).
 
+## Hardening the audit log (Postgres, production)
+
+`agentguard.audit.service` only ever inserts into `audit_events` — there's no update/delete code path (checked by `tests/test_audit.py`). To make that DB-enforced too, not just a code convention, run `sql/postgres_audit_role.sql` against your production database after migrations. It revokes UPDATE/DELETE/TRUNCATE on `audit_events` from the app's own role. Not applicable to SQLite dev/test runs.
+
 ## Operator controls and monitoring
 
 ```

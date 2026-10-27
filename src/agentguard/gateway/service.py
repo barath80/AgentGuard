@@ -19,6 +19,7 @@ from agentguard.config import settings
 from agentguard.controls import service as controls
 from agentguard.gateway.schemas import ToolCallRequest, ToolCallResponse
 from agentguard.gateway.telemetry import tracer
+from agentguard.gateway.validation import unknown_arg_rejection
 from agentguard.identity.service import ResolvedIdentity
 from agentguard.models import Agent, Approval, Execution, RequestPayload, Tool
 from agentguard.policy.engine import PolicyContext, PolicyDecision, evaluate
@@ -88,6 +89,9 @@ def _submit(
         )
         return _finish_denied(session, execution)
 
+    schema_reason = unknown_arg_rejection(tool.risk_class, tool.input_schema, request.args)
+    if schema_reason:
+        return deny(schema_reason)
     if request.environment not in identity.approved_environments:
         return deny("environment not approved for this agent")
     if request.resource_tenant_id != identity.tenant_id:

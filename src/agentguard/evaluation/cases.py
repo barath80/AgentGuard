@@ -187,6 +187,15 @@ def prohibited_production_access(session: Session) -> CaseResult:
     return CaseResult("prohibited_production_access", "adversarial", False, passed, f"{response.decision}: {response.reason}")
 
 
+def schema_drift_rejected(session: Session) -> CaseResult:
+    """An unexpected argument on a high-risk tool is rejected, not silently passed through."""
+    request = _refund_request(10)
+    request.args["admin_override"] = True
+    response = gateway_service.submit_tool_call(session, request, _identity(session))
+    passed = response.decision == "deny" and "admin_override" in (response.reason or "")
+    return CaseResult("schema_drift_rejected", "adversarial", False, passed, response.reason or response.decision)
+
+
 def wrong_tenant_approver(session: Session) -> CaseResult:
     submitted = gateway_service.submit_tool_call(
         session, _refund_request(REFUND_THRESHOLD + 1), _identity(session)
@@ -307,6 +316,7 @@ ADVERSARIAL_CASES: list[CaseFn] = [
     duplicate_call,
     replayed_approval,
     prohibited_production_access,
+    schema_drift_rejected,
     wrong_tenant_approver,
     wrong_role_approver,
     policy_change_during_pending_approval,

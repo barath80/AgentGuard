@@ -52,6 +52,16 @@ class Reconciliation:
     result: dict[str, Any] | None = None
 
 
+def simulate_direct_call(executor_ref: str, args: dict[str, Any], idempotency_key: str) -> dict[str, Any]:
+    """For the Phase 5 comparison experiment only: what an agent could do if it
+    simply held the target credential directly, bypassing the gateway entirely.
+    Lives here, not in evaluation/comparison.py, so `credential_for_scope` stays
+    reachable only from inside this package (tests/test_broker.py enforces that).
+    """
+    executor = _executor(executor_ref)
+    return executor.run(args, credential_for_scope(executor.scope), idempotency_key)
+
+
 def reconcile(executor_ref: str, idempotency_key: str) -> Reconciliation:
     """Ask the target system whether a timed-out call actually took effect."""
     executor = _executor(executor_ref)
