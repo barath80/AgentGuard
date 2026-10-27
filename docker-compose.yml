@@ -25,5 +25,19 @@ services:
       timeout: 5s
       retries: 10
 
+  app:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+psycopg://agentguard:agentguard@postgres:5432/agentguard
+      REDIS_URL: redis://redis:6379/0
+      ENVIRONMENT: development
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
 volumes:
   agentguard_pg_data:
