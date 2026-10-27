@@ -81,6 +81,23 @@ python -m agentguard.evaluation.runner --json evaluation-report.json   # also sa
 
 Exits with code 1 if any attack succeeds or any routine case regresses. CI (`.github/workflows/ci.yml`) runs this on every push and PR, after lint and `pytest`.
 
+## Replay and policy simulation
+
+Both commands read recorded traces from `DATABASE_URL` (override with `--database-url`) over a read-only connection, and never execute a real tool.
+
+1. Generate some traces first, e.g. start the gateway and run `python -m agentguard.sdk.mock_agent` (Option A above).
+2. See how a proposed policy would change past decisions:
+   ```
+   python -m agentguard.replay.cli simulate --policy policies/proposed/v2-stricter-refunds.json
+   ```
+   Add `--fail-on-loosening` to exit with code 1 if the proposal would allow anything the current policy blocked or gated.
+3. Check that recorded decisions reproduce under the policy versions they were made with:
+   ```
+   python -m agentguard.replay.cli replay
+   ```
+
+Proposed policies are JSON files in `policies/proposed/` — see the example file for the format (`version`, plus `rules` with `match`, `decision`, `priority`, and optional `approval_role`).
+
 ## Linting
 
 ```

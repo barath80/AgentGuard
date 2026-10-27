@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "description": "Lower the auto-approved refund threshold from 500 to 200.",
+  "rules": [
+    {
+      "priority": 10,
+      "decision": "deny",
+      "match": {"environment": ["prod"], "risk_class": ["write-high", "destructive"]}
+    },
+    {
+      "priority": 20,
+      "decision": "approval_required",
+      "approval_role": "support-lead",
+      "match": {"tool": "issue-refund", "arg": {"field": "amount", "op": "gt", "value": 200}}
+    },
+    {
+      "priority": 30,
+      "decision": "allow",
+      "match": {"tool": "issue-refund", "arg": {"field": "amount", "op": "lte", "value": 200}}
+    },
+    {
+      "priority": 40,
+      "decision": "allow",
+      "match": {"tool": ["read-ticket", "create-ticket"], "environment": ["dev", "staging"]}
+    }
+  ]
+}

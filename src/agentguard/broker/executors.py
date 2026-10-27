@@ -10,25 +10,23 @@ broker, not by the agent.
 from collections.abc import Callable
 from typing import Any
 
-ExecutorFn = Callable[[dict[str, Any]], dict[str, Any]]
+from agentguard.mock_systems import TICKETS
 
-_MOCK_TICKETS: dict[str, dict[str, Any]] = {
-    "T-1001": {"ticket_id": "T-1001", "subject": "Can't log in", "status": "open"},
-}
+ExecutorFn = Callable[[dict[str, Any]], dict[str, Any]]
 
 
 def read_ticket(args: dict[str, Any]) -> dict[str, Any]:
     ticket_id = args["ticket_id"]
-    ticket = _MOCK_TICKETS.get(ticket_id)
+    ticket = TICKETS.get(ticket_id)
     if ticket is None:
         return {"found": False, "ticket_id": ticket_id}
     return {"found": True, **ticket}
 
 
 def create_ticket(args: dict[str, Any]) -> dict[str, Any]:
-    ticket_id = f"T-{1000 + len(_MOCK_TICKETS) + 1}"
+    ticket_id = f"T-{1000 + len(TICKETS) + 1}"
     ticket = {"ticket_id": ticket_id, "subject": args["subject"], "status": "open"}
-    _MOCK_TICKETS[ticket_id] = ticket
+    TICKETS[ticket_id] = ticket
     return {"created": True, **ticket}
 
 

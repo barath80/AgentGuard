@@ -19,7 +19,7 @@ One entry per edge case from the project spec. Each entry states the mechanism A
 | 13 | Schema drift on tool arguments | Tools are versioned (`schema_version`); unknown or unexpected high-risk fields are rejected by default rather than silently passed through | 1 |
 | 14 | Agent loop / tool-call spam | Per-agent rate limits, budgets, deadlines, circuit breaker, and a kill switch | 4 |
 | 15 | Model update changes agent behavior | Regression suite (routine + adversarial cases) required to pass before any prompt/model/tool/policy change ships | 2 |
-| 16 | Replay accidentally triggers a real action | Replay/simulation runs only against mocks or read-only systems by default; there is no code path where replay calls the live broker with real credentials | 3 |
+| 16 | Replay accidentally triggers a real action | Three layers: (a) `agentguard.replay` never imports `agentguard.broker` or the gateway service, verified by a test that inspects loaded modules in a fresh interpreter; (b) tool steps run through dry-run adapters only; (c) the CLI's DB connection is read-only at the database level (`PRAGMA query_only` / `READ ONLY` transactions) | 3 (implemented) |
 | 17 | Clock skew / missing trace segments | Correlate by request ID across both event time and ingestion time; `trace_complete` is explicitly computed and false when a segment is missing, rather than assumed true | 1 |
 | 18 | Partial failure in a multi-step workflow | Explicit per-step state in `executions`; compensating actions only where they are actually safe; partial completion is reported as such, not rounded up to success | 4 |
 

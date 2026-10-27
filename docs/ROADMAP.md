@@ -40,9 +40,10 @@ Deferred to later phases on purpose: agent/tool CRUD endpoints (only one seeded 
 
 ## Phase 3 — Replay & counterfactual simulation
 
-- [ ] Deterministic replay against mocks/read-only systems
-- [ ] Counterfactual policy simulation (proposed policy vs. recorded traces, no execution)
-- [ ] Task-success measurement alongside safety metrics
+- [x] Deterministic replay against mocks/read-only systems — re-derives each recorded decision under the policy version it was made with (not the active one) and runs tool steps through dry-run adapters (`src/agentguard/replay/`)
+- [x] Counterfactual policy simulation (proposed policy vs. recorded traces, no execution) — `python -m agentguard.replay.cli simulate --policy <file>`; `--fail-on-loosening` makes it usable as a pre-release gate
+- [x] Task-success measurement alongside safety metrics — simulation reports newly-allowed (security loosening) and newly-restricted (task-success risk) calls separately, plus unattended completion rate before → after
+- [ ] Snapshot agent risk category into the trace — replay currently reads it from the live registry, so changing an agent's category can make an old decision fail to reproduce
 
 ## Phase 4 — Resilience & observability
 
@@ -59,4 +60,4 @@ Deferred to later phases on purpose: agent/tool CRUD endpoints (only one seeded 
 
 ## Status
 
-Phases 0–2 complete (except the gateway-bypass case, deferred to Phase 4). Next up: Phase 3 — deterministic replay and counterfactual policy simulation.
+Phases 0–3 complete (gateway-bypass case and risk-category snapshotting still open). Next up: Phase 4 — fail-closed outage handling, budgets/rate limits/kill switch, OpenTelemetry, broker reconciliation.

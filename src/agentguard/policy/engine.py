@@ -90,6 +90,48 @@ def _as_list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else [value]
 
 
+@dataclass(frozen=True)
+class RuleSpec:
+    """Storage-independent rule, so proposed (unpublished) policies can be
+    evaluated with exactly the same code path as the live one."""
+
+    id: str
+    match: dict[str, Any]
+    decision: str
+    priority: int
+    approval_role: str | None = None
+
+    @classmethod
+    def from_orm(cls, rule: PolicyRule) -> "RuleSpec":
+        return cls(rule.id, rule.match or {}, rule.decision, rule.priority, rule.approval_role)
+
+
+def evaluate_rules(rules: list[RuleSpec], policy_version: int, ctx: PolicyContext) -> PolicyDecision:
+    """Pure function: no DB access, no side effects."""
+    for rule in sorted(rules, key=lambda r: r.priority):
+        if _rule_matches(rule.match, ctx):
+            if rule.decision not in DECISIONS:
+                raise ValueError(f"policy rule {rule.id} has invalid decision {rule.decision!r}")
+            return PolicyDecision(
+                decision=rule.decision,
+                policy_version=policy_version,
+                matched_rule_id=rule.id,
+                required_role=rule.approval_role,
+            )
+
+    # Implicit catch-all: fail closed.
+    return PolicyDecision(decision="deny", policy_version=policy_version, matched_rule_id=None)
+
+
+def load_rules(session: Session, version: int, *, scope: str = "global") -> list[RuleSpec] | None:
+    policy = (
+        session.query(Policy)
+        .filter(Policy.scope == scope, Policy.version == version)
+        .one_or_none()
+    )
+    return None if policy is None else [RuleSpec.from_orm(r) for r in policy.rules]
+
+
 def evaluate(session: Session, ctx: PolicyContext, *, scope: str = "global") -> PolicyDecision:
     policy = (
         session.query(Policy)
@@ -100,17 +142,4 @@ def evaluate(session: Session, ctx: PolicyContext, *, scope: str = "global") -> 
         # Fail closed: no active policy means we cannot evaluate at all.
         return PolicyDecision(decision="deny", policy_version=-1, matched_rule_id=None)
 
-    rules: list[PolicyRule] = sorted(policy.rules, key=lambda r: r.priority)
-    for rule in rules:
-        if _rule_matches(rule.match or {}, ctx):
-            if rule.decision not in DECISIONS:
-                raise ValueError(f"policy rule {rule.id} has invalid decision {rule.decision!r}")
-            return PolicyDecision(
-                decision=rule.decision,
-                policy_version=policy.version,
-                matched_rule_id=rule.id,
-                required_role=rule.approval_role,
-            )
-
-    # Implicit catch-all: fail closed.
-    return PolicyDecision(decision="deny", policy_version=policy.version, matched_rule_id=None)
+    return evaluate_rules([RuleSpec.from_orm(r) for r in policy.rules], policy.version, ctx)

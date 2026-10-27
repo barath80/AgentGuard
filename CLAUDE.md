@@ -36,6 +36,8 @@ See [SETUP.md](SETUP.md) for full steps (native venv+SQLite or Docker Compose). 
 - `src/agentguard/broker/` — scoped execution of approved tool calls, idempotency, timeout handling.
 - `src/agentguard/audit/` — append-only decision/outcome log.
 - `src/agentguard/sdk/` — client adapter agents use to call through the gateway.
+- `src/agentguard/evaluation/` — routine/adversarial cases and the metrics runner that gates CI.
+- `src/agentguard/replay/` — read-only replay and counterfactual policy simulation. Must never import `agentguard.broker` or `agentguard.gateway.service` (enforced by `tests/test_replay.py`).
 - `tests/` — unit tests mirror `src/agentguard/`; `tests/adversarial/` holds the attack-case suite (prompt injection, spoofed identity, replay, bypass, etc. — see [docs/EVALUATION.md](docs/EVALUATION.md)).
 
 ## Working style for this repo
