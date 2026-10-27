@@ -4,7 +4,7 @@ Guidance for Claude Code sessions working in this repository.
 
 ## Git: no automatic commits
 
-**Never run `git commit` or `git push` unless the user explicitly asks for it in that turn.** Completing a task, finishing a phase, or the user saying "looks good" is not consent to commit, however, once done at checkpoints, suggest commit messages to the user. Routine file edits, scaffolding, running tests, and iterating on code are not commit triggers. If you think a commit makes sense, say so and wait — don't act on it.
+**Never run `git commit` or `git push` unless the user explicitly asks for it in that turn.** Completing a task, finishing a phase, or the user saying "looks good" is not consent to commit, however, once done at checkpoints, suggest commit messages to the user without mentioning the co-author. Routine file edits, scaffolding, running tests, and iterating on code are not commit triggers. If you think a commit makes sense, say so and wait — don't act on it.
 
 ## What this project is
 
@@ -20,10 +20,12 @@ AgentGuard is a runtime authorization, audit, and replay gateway for AI agent to
 
 ## Running things locally
 
-- `docker compose up -d` — starts Postgres + Redis (and the app once it exists).
-- `pytest` — unit + integration tests (integration tests expect Docker Compose services running).
+See [SETUP.md](SETUP.md) for full steps (native venv+SQLite or Docker Compose). Quick reference:
+
+- `docker compose up -d --build` — starts Postgres + Redis + app.
+- `pytest` — unit + integration tests.
 - `ruff check .` — lint.
-- `alembic upgrade head` — apply DB migrations (once migrations exist).
+- `alembic upgrade head` — apply DB migrations.
 
 ## Code layout (as it's built out)
 
