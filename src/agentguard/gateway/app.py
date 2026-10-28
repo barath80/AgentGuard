@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from agentguard.approval import service as approval_service
@@ -39,6 +40,13 @@ async def _lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="AgentGuard Gateway", lifespan=_lifespan)
+
+
+@app.get("/", include_in_schema=False)
+def root() -> RedirectResponse:
+    """The bare root 404s by default in FastAPI, which looks like the server is
+    broken when it's actually fine — send people to the docs instead."""
+    return RedirectResponse(url="/docs")
 
 
 def require_identity(

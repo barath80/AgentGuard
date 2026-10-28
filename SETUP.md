@@ -14,7 +14,9 @@ Fastest way to run the app and tests without Docker.
 1. Create and activate a virtualenv:
    ```
    python -m venv .venv
-   source .venv/Scripts/activate   # Windows Git Bash / PowerShell: .venv\Scripts\Activate.ps1
+   source .venv/Scripts/activate       # Git Bash / WSL
+   .venv\Scripts\Activate.ps1          # PowerShell
+   .venv\Scripts\activate.bat          # cmd.exe (or just `.venv\Scripts\activate`)
    ```
 2. Install the project with dev dependencies:
    ```
@@ -33,7 +35,7 @@ Fastest way to run the app and tests without Docker.
    python -m agentguard.sdk.mock_agent
    ```
    You should see `read-ticket`, `create-ticket`, and both `issue-refund` calls print results, with the over-threshold refund coming back as `approval_required`.
-6. API docs (Swagger UI) are at `http://localhost:8000/docs` while the server is running.
+6. API docs (Swagger UI) are at `http://localhost:8000/docs` while the server is running — the bare `http://localhost:8000/` redirects there too. There's no visible homepage; this is an API server, not a website, so step 5 (the mock agent, or `curl`/`/docs`) is how you confirm it's actually working, not just opening the root URL in a browser.
 
 ## Option B — Docker Compose (Postgres + Redis + app)
 
@@ -143,3 +145,4 @@ ruff check .
 - **"Cannot connect to the Docker daemon" / pipe not found errors**: Docker Desktop isn't running. Start it and retry — this isn't a problem with `docker-compose.yml` itself (`docker compose config` validates the file without needing the daemon up, and can be used to sanity-check syntax independent of whether Docker Desktop is running).
 - **Port already in use (5432, 6379, or 8000)**: something else on your machine is using that port. Stop it, or change the published port in `docker-compose.yml` (left side of `"host:container"` in each service's `ports:`).
 - **Stale SQLite state while iterating locally**: delete `agentguard.db` and restart the app — it gets recreated and reseeded automatically.
+- **`{"detail":"Not Found"}` when opening `http://localhost:8000/`**: not an error — this is an API server with no homepage. The root now redirects to `/docs`; if you still see this, restart the server to pick up the fix (it isn't hot-reloaded without `--reload`).
