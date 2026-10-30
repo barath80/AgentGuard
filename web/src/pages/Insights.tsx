@@ -1,7 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
-import { Activity, BrainCircuit, Gauge, ReceiptText, Repeat, ShieldCheck, Timer, UserCog, Wallet, Zap, type LucideIcon } from "lucide-react";
+import { Activity, BrainCircuit, Clock, Gauge, ReceiptText, Repeat, ShieldCheck, Timer, UserCog, Wallet, Zap, type LucideIcon } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Badge, Card, EmptyState, ErrorState, PageHeader, Skeleton } from "../components/ui";
+import { WorkflowsCard } from "../components/WorkflowsCard";
 import { api, type AgentRisk, type Finding } from "../lib/api";
 import { formatDateTime, timeAgo } from "../lib/format";
 
@@ -27,6 +28,12 @@ const KIND: Record<string, { icon: LucideIcon; title: string; tone: "critical" |
     title: "Unresolved timeout",
     tone: "critical",
     why: "The broker timed out and the target hasn't confirmed whether the side effect happened. Never assume it didn't.",
+  },
+  clock_skew: {
+    icon: Clock,
+    title: "Clock skew between services",
+    tone: "warning",
+    why: "The broker's clock disagrees with the gateway's, so the order of events across services in this trace can't be trusted. Check NTP on both.",
   },
 };
 
@@ -151,6 +158,7 @@ export function Insights() {
         description="Patterns worth a human look — including ones that were already blocked — and a log of every action taken in this console."
       />
       <RiskCard />
+      <WorkflowsCard />
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_380px]">
         <Card title="Anomaly findings" subtitle="Derived read-only from the execution trace">
           {findings.error && <ErrorState error={findings.error} />}

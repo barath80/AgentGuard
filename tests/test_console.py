@@ -105,6 +105,30 @@ def test_overview_counts_decisions_in_the_window(client):
     assert client.get("/v1/console/overview?window_hours=5", headers=bearer("ops-token")).status_code == 422
 
 
+def test_overview_aggregates_match_the_recorded_executions(client, session):
+    register_agent(session, "b-agent@dev-workload-pool", tenant_id="tenant-b")
+    submit(client)
+    submit(client, "issue-refund", {"ticket_id": "T-1001", "amount": 50})
+    submit(client, "issue-refund", {"ticket_id": "T-1001", "amount": 900})
+    submit(client, headers={"x-workload-identity": "b-agent@dev-workload-pool"}, resource_tenant_id="tenant-b")
+    submit(client, resource_tenant_id="tenant-b")  # tenant mismatch: denied, recorded under tenant-a
+
+    everything = client.get("/v1/console/overview?window_hours=24", headers=bearer("ops-token")).json()
+    assert everything["totals"]["by_decision"] == {"allow": 3, "approval_required": 1, "deny": 1}
+    assert everything["totals"]["by_tool"] == {"read-ticket": 3, "issue-refund": 2}
+    assert everything["denials_by_reason"] == {"tenant mismatch: resource belongs to a different tenant": 1}
+    assert sum(b["allow"] for b in everything["series"]) == 3
+    assert everything["series"][-1]["allow"] == 3  # all just now: the last bucket
+    assert everything["trace_completeness"] == 1.0
+    assert everything["latency_ms"]["p50"] is not None
+    assert everything["pending_approvals"] == 1
+    assert len(everything["recent"]) == 5
+
+    tenant_a = client.get("/v1/console/overview?window_hours=24", headers=bearer("lead-a-token")).json()
+    assert tenant_a["totals"]["calls"] == 4
+    assert all(r["tenant_id"] == "tenant-a" for r in tenant_a["recent"])
+
+
 def test_approver_decides_from_the_console_and_agent_executes(client, session):
     pending = submit(client, "issue-refund", {"ticket_id": "T-1001", "amount": 900})
     approval_id = pending["approval_id"]
@@ -214,3 +238,57 @@ def test_live_changes_are_tenant_scoped_and_include_approvals(client, session):
 
 def test_live_stream_requires_sign_in(client):
     assert client.get("/v1/console/stream").status_code == 401
+
+
+AGENT_SPEC = {
+    "workload_identity_ref": "returns-agent@dev-workload-pool", "owner": "support-eng", "tenant_id": "tenant-a",
+    "approved_environments": ["dev"], "risk_category": "medium", "rate_limit_per_minute": 30,
+    "daily_spend_limit": 200,
+}
+
+
+def test_operator_registers_an_agent_that_can_then_call_tools(client, session):
+    assert client.post("/v1/console/agents", json=AGENT_SPEC, headers=bearer("lead-a-token")).status_code == 403
+    created = client.post("/v1/console/agents", json=AGENT_SPEC, headers=bearer("ops-token"))
+    assert created.status_code == 201 and created.json()["name"] == "returns-agent"
+    assert client.post("/v1/console/agents", json=AGENT_SPEC, headers=bearer("ops-token")).status_code == 409
+
+    agent_headers = {"x-workload-identity": AGENT_SPEC["workload_identity_ref"]}
+    assert submit(client, headers=agent_headers)["decision"] == "allow"
+    assert submit(client, headers=agent_headers, environment="staging")["decision"] == "deny"  # not approved there
+    action = session.query(OperatorAction).filter_by(action="agent.registered").one()
+    assert action.actor == "operator" and action.detail["daily_spend_limit"] == 200
+
+
+@pytest.mark.parametrize("field,value", [
+    ("workload_identity_ref", "Not An Identity"),
+    ("tenant_id", "tenant a; drop"),
+    ("approved_environments", ["moon"]),
+    ("approved_environments", []),
+    ("rate_limit_per_minute", 0),
+])
+def test_agent_registration_validates_its_input(client, field, value):
+    response = client.post("/v1/console/agents", json={**AGENT_SPEC, field: value}, headers=bearer("ops-token"))
+    assert response.status_code == 422
+
+
+STRICTER = [
+    {"match": {"environment": ["prod"]}, "decision": "deny", "priority": 10},
+    {"match": {"tool": "issue-refund", "arg": {"field": "amount", "op": "gt", "value": 100}},
+     "decision": "approval_required", "approval_role": "support-lead", "priority": 20},
+    {"match": {}, "decision": "allow", "priority": 100},
+]
+
+
+def test_publishing_a_stricter_policy_activates_the_next_version(client, session):
+    submit(client, "issue-refund", {"ticket_id": "T-1001", "amount": 300})  # allowed under v1
+    published = client.post("/v1/console/policies", json={"description": "gate refunds over 100", "rules": STRICTER},
+                            headers=bearer("ops-token"))
+    assert published.status_code == 201, published.text
+    assert published.json()["version"] == 2 and published.json()["newly_restricted"] == 1
+
+    versions = client.get("/v1/console/policies", headers=bearer("ops-token")).json()["versions"]
+    assert [(v["version"], v["is_active"]) for v in versions] == [(2, True), (1, False)]
+    assert submit(client, "issue-refund", {"ticket_id": "T-1001", "amount": 300})["decision"] == "approval_required"
+    action = session.query(OperatorAction).filter_by(action="policy.published").one()
+    assert action.detail["previous_version"] == 1 and action.detail["loosening_acknowledged"] is False

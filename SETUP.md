@@ -84,7 +84,7 @@ TARGET_BACKEND=helpdesk HELPDESK_URL=http://127.0.0.1:8200 BROKER_SERVICE_TOKEN=
   uvicorn agentguard.broker.server:app --port 8100
 ```
 
-Then `python -m agentguard.sdk.demo_traffic --rounds 3`. Its agents read real tickets and refund within the order amount; refunds land in the helpdesk's database (`helpdesk.db`). A hijacked intake agent tries cross-tenant reads, unexpected arguments and prod writes, and its circuit breaker opens.
+Then `python -m agentguard.sdk.demo_traffic --rounds 3` (or `--rounds 0 --interval 60 --attack-rate 0.05` to keep a fleet working until stopped, which is how the anomaly model gets history to learn from). Its agents read real tickets and refund within the order amount; refunds land in the helpdesk's database (`helpdesk.db`). A hijacked intake agent tries cross-tenant reads, unexpected arguments and prod writes, and its circuit breaker opens.
 
 ## The Claude support agent
 
@@ -112,6 +112,7 @@ Needs `pip install -e ".[ml]"`. Train it from recorded traces (read-only connect
 
 ```
 python -m agentguard.ml.model train            # refuses with fewer than --min-windows (default 50) 15-minute windows
+python -m agentguard.ml.model train --since 2026-10-30T03:40   # learn only from a period you trust
 python -m agentguard.ml.model score
 ```
 
@@ -145,6 +146,7 @@ Copy `.env.example` to `.env` and adjust if needed — defaults work for both op
 | `KILL_SWITCH` | `false` | `true` denies every tool call for every agent (needs a restart; to stop one agent immediately, suspend it instead — see below) |
 | `ALLOW_READS_WHEN_POLICY_UNAVAILABLE` | `false` | The only fail-open: if policy evaluation errors, still allow `read`-class tools. Writes are always denied |
 | `BROKER_TIMEOUT_SECONDS` | `5` | Per-call deadline for tool execution |
+| `CLOCK_SKEW_TOLERANCE_SECONDS` | `1.0` | How far the broker's clock may disagree with the gateway's before a `clock_skew` event is recorded |
 | `BREAKER_THRESHOLD` / `BREAKER_WINDOW_SECONDS` | `5` / `300` | Denials within the window that open an agent's circuit |
 | `OPERATOR_TOKEN` | unset (`dev-only-operator-token` in `.env.example`) | Required for `/v1/stats`; unset disables the endpoint. Also signs a read-all `operator` principal into the console |
 | `CONSOLE_PRINCIPALS` | unset | JSON list of console principals (`name`, `roles`, `tenants`, `token_sha256`). Malformed JSON signs nobody in |
@@ -161,6 +163,16 @@ Copy `.env.example` to `.env` and adjust if needed — defaults work for both op
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | Enables OpenTelemetry trace export over OTLP/HTTP, e.g. `http://localhost:4318` |
 
 Per-agent limits (`rate_limit_per_minute`, `daily_spend_limit`) are columns on the agent record, set when the agent is registered (see `register_agent` in `src/agentguard/policy/seed.py`).
+
+## Tests against Postgres
+
+The default test run uses throwaway SQLite files. To exercise the Postgres-only SQL (console aggregates, runtime-role grants) like CI does, point the tests at an empty database and a role that may create roles:
+
+```
+TEST_DATABASE_URL=postgresql+psycopg://agentguard:agentguard@localhost:5432/agentguard_test TEST_POSTGRES_ADMIN_URL=postgresql://agentguard:agentguard@localhost:5432/agentguard   pytest tests/test_console.py tests/test_gateway_flow.py tests/test_controls.py tests/test_db_grants.py tests/test_replay.py tests/adversarial
+```
+
+Without Docker, `pip install pgserver` gives you a local Postgres binary to run this against.
 
 ## Database migrations
 
@@ -201,7 +213,7 @@ Proposed policies are JSON files in `policies/proposed/` — see the example fil
 
 ## Hardening the audit log (Postgres, production)
 
-`agentguard.audit.service` only ever inserts into `audit_events` — there's no update/delete code path (checked by `tests/test_audit.py`). To make that DB-enforced too, not just a code convention, run `sql/postgres_audit_role.sql` against your production database after migrations. It revokes UPDATE/DELETE/TRUNCATE on `audit_events` from the app's own role. Not applicable to SQLite dev/test runs.
+`agentguard.audit.service` only ever inserts into `audit_events` — there's no update/delete code path (checked by `tests/test_audit.py`). To make that DB-enforced too, run migrations as the role that owns the schema, then `python -m agentguard.audit.grants --app-role agentguard_app`, and have the services connect as `agentguard_app`. That role owns nothing, gets SELECT/INSERT only on the audit tables and DELETE on none, and so can't grant itself more. Compose does exactly this (`migrate` service; the role is created by `deploy/postgres/10-app-role.sql` when the volume is first initialised, so on an older volume run `docker compose down -v` once or create the role by hand). Not applicable to SQLite dev/test runs.
 
 ## Operator controls and monitoring
 

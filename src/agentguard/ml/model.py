@@ -171,15 +171,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--database-url", default=settings.database_url)
     parser.add_argument("--model-path", type=Path, default=Path(settings.anomaly_model_path))
     sub = parser.add_subparsers(dest="command", required=True)
-    tr = sub.add_parser("train", help="train on all recorded traces")
+    tr = sub.add_parser("train", help="train on recorded traces")
     tr.add_argument("--min-windows", type=int, default=50)
+    tr.add_argument("--since", type=datetime.fromisoformat, default=None,
+                    help="only learn from traces after this time (ISO 8601, UTC): start of a period you trust")
     sub.add_parser("score", help="show the riskiest recent window per agent")
     args = parser.parse_args(argv)
 
     session = read_only_session(args.database_url)
     try:
         if args.command == "train":
-            windows = build_windows(session)
+            since = args.since.replace(tzinfo=args.since.tzinfo or UTC) if args.since else None
+            windows = build_windows(session, since=since)
             try:
                 model = train(windows, min_windows=args.min_windows)
             except ModelUnavailable as exc:

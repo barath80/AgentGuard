@@ -1,10 +1,9 @@
 """Append-only audit logging.
 
 Only `record` exists here on purpose — there is no update/delete
-helper. In a real deployment the DB role the app connects as should
-also lack UPDATE/DELETE grants on `audit_events`, so this is enforced
-at two layers, not just by convention (see edge case #8 in
-docs/THREAT_MODEL.md).
+helper. On Postgres the runtime DB role also lacks UPDATE/DELETE on
+`audit_events` (agentguard.audit.grants), so this is enforced at two
+layers, not just by convention (edge case #8 in docs/THREAT_MODEL.md).
 """
 
 from typing import Any

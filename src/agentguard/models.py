@@ -8,7 +8,7 @@ keep the schema portable between SQLite (tests) and Postgres (runtime).
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from agentguard.db import Base
@@ -64,6 +64,8 @@ class Tool(Base):
 
 class Policy(Base):
     __tablename__ = "policies"
+    # Two operators publishing at once must not both create "version N+1".
+    __table_args__ = (UniqueConstraint("version", name="uq_policies_version"),)
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -124,6 +126,9 @@ class Execution(Base):
     # cycle. Validated at the application layer instead (gateway/service.py).
     approval_id: Mapped[str | None] = mapped_column(String, nullable=True)
     idempotency_key: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    # Agent-supplied grouping label for multi-step tasks (THREAT_MODEL #18). Always read
+    # together with agent_id: it's only unique per agent, and it never affects decisions.
+    workflow_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -134,6 +139,11 @@ class Execution(Base):
     # lock an agent out forever.
     reason: Mapped[str | None] = mapped_column(String, nullable=True)
     safe_request_ref: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Registry attributes the decision depended on, as they were at request time, so
+    # replay reproduces it even after an agent or tool is re-categorised. Null on rows
+    # recorded before these were captured; replay falls back to the registry for those.
+    agent_risk_category: Mapped[str | None] = mapped_column(String, nullable=True)
+    tool_risk_class: Mapped[str | None] = mapped_column(String, nullable=True)
     safe_result_ref: Mapped[str | None] = mapped_column(String, nullable=True)
     trace_complete: Mapped[bool] = mapped_column(Boolean, default=False)
 

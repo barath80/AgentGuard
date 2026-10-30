@@ -8,7 +8,7 @@ SRC = Path(__file__).resolve().parents[1] / "src" / "agentguard"
 
 
 def test_no_code_path_updates_or_deletes_audit_events():
-    """Static guarantee behind the DB grant in sql/postgres_audit_role.sql:
+    """Static guarantee behind the DB grant in agentguard.audit.grants:
     nothing in the application ever updates or deletes an AuditEvent row."""
     mutating = re.compile(r"(AuditEvent\b.*\.(update|delete)\()|(query\(AuditEvent\).*\.delete\()")
     offenders = [

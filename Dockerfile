@@ -23,5 +23,6 @@ USER 10001
 HEALTHCHECK --interval=10s --timeout=3s --retries=5 \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/readyz')"
 
-# Compose runs migrations on start for convenience; Kubernetes runs them in a pre-upgrade Job instead.
-CMD ["sh", "-c", "alembic upgrade head && uvicorn agentguard.gateway.app:app --host 0.0.0.0 --port 8000"]
+# Migrations run separately, as the schema owner (Compose `migrate` service, Kubernetes pre-upgrade Job);
+# the services themselves connect as a role that can't change the schema.
+CMD ["uvicorn", "agentguard.gateway.app:app", "--host", "0.0.0.0", "--port", "8000"]

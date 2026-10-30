@@ -11,7 +11,9 @@ Two deployment modes, same interface:
 """
 
 import concurrent.futures
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -70,6 +72,20 @@ def reconcile_locally(executor_ref: str, idempotency_key: str) -> Reconciliation
     return Reconciliation("applied", result) if result is not None else Reconciliation("not_observed")
 
 
+CLOCK_STARTED_HEADER = "X-Broker-Started-At"
+CLOCK_FINISHED_HEADER = "X-Broker-Finished-At"
+
+
+def _broker_clock(response: httpx.Response) -> tuple[datetime, datetime] | None:
+    try:
+        return (
+            datetime.fromisoformat(response.headers[CLOCK_STARTED_HEADER]),
+            datetime.fromisoformat(response.headers[CLOCK_FINISHED_HEADER]),
+        )
+    except (KeyError, ValueError):
+        return None
+
+
 def _remote() -> httpx.Client:
     return httpx.Client(
         base_url=settings.broker_url,
@@ -84,8 +100,13 @@ def execute(
     idempotency_key: str,
     tenant_id: str,
     timeout_seconds: float,
+    on_clock: Callable[[datetime, datetime], None] | None = None,
 ) -> dict[str, Any]:
-    """Run one already-authorized tool call. `idempotency_key` is the execution id."""
+    """Run one already-authorized tool call. `idempotency_key` is the execution id.
+
+    With a remote broker, `on_clock` receives the broker's own start/finish times,
+    a second clock the gateway can check its trace against.
+    """
     if not settings.broker_url:
         return run_locally(
             executor_ref, args, idempotency_key=idempotency_key, tenant_id=tenant_id, timeout_seconds=timeout_seconds
@@ -102,6 +123,8 @@ def execute(
     if response.status_code == 422:
         raise TargetRejected(response.json().get("detail", "target rejected the call"))
     response.raise_for_status()
+    if on_clock and (clock := _broker_clock(response)):
+        on_clock(*clock)
     return response.json()
 
 

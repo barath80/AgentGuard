@@ -17,8 +17,11 @@ imagePullSecrets: []
 environment: production
 
 database:
-  # Secret with key DATABASE_URL (e.g. postgresql+psycopg://user:pass@host:5432/agentguard).
+  # Secret with keys DATABASE_URL (services, connecting as appRole) and MIGRATION_DATABASE_URL
+  # (the migrate Job, connecting as the role that owns the schema).
   existingSecret: agentguard-database
+  # Runtime role: owns nothing; the migrate Job grants it what it needs (agentguard.audit.grants).
+  appRole: agentguard_app
   # Where the database lives, for the egress network policy. Managed Postgres is usually outside the cluster.
   egressCIDR: 10.0.0.0/8
   port: 5432

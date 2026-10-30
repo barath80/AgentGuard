@@ -29,18 +29,19 @@ class AgentGuardClient:
         target_resource: str,
         args: dict[str, Any],
         idempotency_key: str,
+        workflow_id: str | None = None,
     ) -> dict[str, Any]:
-        response = self._http.post(
-            "/v1/tool-calls",
-            json={
-                "tool_name": tool_name,
-                "environment": environment,
-                "resource_tenant_id": resource_tenant_id,
-                "target_resource": target_resource,
-                "args": args,
-                "idempotency_key": idempotency_key,
-            },
-        )
+        body = {
+            "tool_name": tool_name,
+            "environment": environment,
+            "resource_tenant_id": resource_tenant_id,
+            "target_resource": target_resource,
+            "args": args,
+            "idempotency_key": idempotency_key,
+        }
+        if workflow_id:
+            body["workflow_id"] = workflow_id
+        response = self._http.post("/v1/tool-calls", json=body)
         response.raise_for_status()
         return response.json()
 

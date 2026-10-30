@@ -25,6 +25,7 @@ export interface ExecutionSummary {
   outcome: string;
   reason: string | null;
   approval_id: string | null;
+  workflow_id: string | null;
   requested_at: string | null;
   completed_at: string | null;
   latency_ms: number | null;
@@ -310,6 +311,51 @@ function qs(params: Record<string, string | number | undefined | null>): string 
   return text ? `?${text}` : "";
 }
 
+export interface AgentSpec {
+  workload_identity_ref: string;
+  name?: string;
+  owner: string;
+  tenant_id: string;
+  approved_environments: ("dev" | "staging" | "prod")[];
+  risk_category: "low" | "medium" | "high";
+  rate_limit_per_minute: number;
+  daily_spend_limit: number | null;
+}
+
+export interface PublishResult {
+  id: string;
+  version: number;
+  previous_version: number;
+  newly_allowed: number;
+  newly_restricted: number;
+}
+
+export type WorkflowStatus = "partial" | "in_progress" | "incomplete" | "completed";
+
+export interface WorkflowStep {
+  execution_id: string;
+  tool_name: string;
+  target_resource: string;
+  decision: Decision;
+  outcome: string;
+  reason: string | null;
+  state: "done" | "waiting" | "blocked" | "failed" | "unconfirmed";
+  writes: boolean;
+  requested_at: string | null;
+}
+
+export interface Workflow {
+  workflow_id: string;
+  agent_id: string;
+  agent_name: string;
+  tenant_id: string;
+  status: WorkflowStatus;
+  started_at: string | null;
+  last_step_at: string | null;
+  steps: WorkflowStep[];
+  side_effects: WorkflowStep[];
+}
+
 export interface ExecutionFilters {
   decision?: string;
   outcome?: string;
@@ -338,11 +384,16 @@ export const api = {
       `/v1/console/agents/${encodeURIComponent(id)}/${suspended ? "suspend" : "resume"}`,
       { method: "POST" },
     ),
+  registerAgent: (spec: AgentSpec) =>
+    request<{ id: string; name: string }>("/v1/console/agents", { method: "POST", body: JSON.stringify(spec) }),
   tools: () => request<Tool[]>("/v1/console/tools"),
   policies: () => request<{ versions: PolicyVersion[]; proposed: ProposedPolicy[] }>("/v1/console/policies"),
   simulate: (policy: unknown) =>
     request<SimulationReport>("/v1/console/simulations", { method: "POST", body: JSON.stringify(policy) }),
+  publishPolicy: (body: { description?: string; rules: Rule[]; acknowledge_loosening: boolean; reason?: string }) =>
+    request<PublishResult>("/v1/console/policies", { method: "POST", body: JSON.stringify(body) }),
   replay: () => request<ReplayReport>("/v1/console/replay", { method: "POST" }),
+  workflows: (status?: WorkflowStatus) => request<Workflow[]>(`/v1/console/workflows${qs({ status })}`),
   anomalies: () => request<Finding[]>("/v1/console/anomalies"),
   operatorActions: () => request<OperatorAction[]>("/v1/console/operator-actions"),
   risk: (hours = 24) => request<RiskReport>(`/v1/console/risk${qs({ hours })}`),

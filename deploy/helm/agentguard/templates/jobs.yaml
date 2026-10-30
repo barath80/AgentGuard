@@ -29,10 +29,13 @@ spec:
       containers:
         - name: migrate
           image: {{ include "agentguard.image" . }}
-          command: ["alembic", "upgrade", "head"]
+          # As the schema owner: migrate, then grant the runtime role exactly what it needs.
+          command: ["sh", "-c", "alembic upgrade head && python -m agentguard.audit.grants --app-role \"$APP_ROLE\""]
           env:
             - name: DATABASE_URL
-              valueFrom: { secretKeyRef: { name: {{ .Values.database.existingSecret }}, key: DATABASE_URL } }
+              valueFrom: { secretKeyRef: { name: {{ .Values.database.existingSecret }}, key: MIGRATION_DATABASE_URL } }
+            - name: APP_ROLE
+              value: {{ .Values.database.appRole | quote }}
           securityContext: {{- toYaml .Values.containerSecurityContext | nindent 12 }}
           volumeMounts:
             - { name: tmp, mountPath: /tmp }
