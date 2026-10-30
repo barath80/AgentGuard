@@ -75,7 +75,7 @@ jobs:
           TEST_POSTGRES_ADMIN_URL: postgresql://agentguard:agentguard@localhost:5432/agentguard
         run: |
           PGPASSWORD=agentguard psql -h localhost -U agentguard -d agentguard -c "create database agentguard_test"
-          pytest -q tests/test_console.py tests/test_gateway_flow.py tests/test_controls.py tests/test_db_grants.py tests/test_replay.py tests/adversarial
+          pytest -q tests/test_console.py tests/test_gateway_flow.py tests/test_controls.py tests/test_db_grants.py tests/test_replay.py tests/test_workflows.py tests/test_clock_skew.py tests/adversarial
 
   console:
     runs-on: ubuntu-latest

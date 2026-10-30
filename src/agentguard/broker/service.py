@@ -11,6 +11,7 @@ Two deployment modes, same interface:
 """
 
 import concurrent.futures
+import functools
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -86,11 +87,18 @@ def _broker_clock(response: httpx.Response) -> tuple[datetime, datetime] | None:
         return None
 
 
+@functools.cache
+def _pool(base_url: str) -> httpx.Client:
+    # Shared and pooled: building an httpx client per call costs more than the call itself.
+    return httpx.Client(base_url=base_url)
+
+
 def _remote() -> httpx.Client:
-    return httpx.Client(
-        base_url=settings.broker_url,
-        headers={"Authorization": f"Bearer {settings.broker_service_token or ''}"},
-    )
+    return _pool(settings.broker_url)
+
+
+def _auth() -> dict[str, str]:
+    return {"Authorization": f"Bearer {settings.broker_service_token or ''}"}
 
 
 def execute(
@@ -113,9 +121,8 @@ def execute(
         )
     body = {"execution_id": idempotency_key, "executor_ref": executor_ref, "args": args, "tenant_id": tenant_id}
     try:
-        with _remote() as http:
-            # The broker enforces the deadline itself; the extra second only covers transport.
-            response = http.post("/v1/execute", json=body, timeout=timeout_seconds + 1)
+        # The broker enforces the deadline itself; the extra second only covers transport.
+        response = _remote().post("/v1/execute", json=body, headers=_auth(), timeout=timeout_seconds + 1)
     except httpx.TimeoutException as exc:
         raise BrokerTimeoutError("broker service did not answer in time") from exc
     if response.status_code == 504:
@@ -132,10 +139,10 @@ def reconcile(executor_ref: str, idempotency_key: str) -> Reconciliation:
     """Ask the target system whether a timed-out call actually took effect."""
     if not settings.broker_url:
         return reconcile_locally(executor_ref, idempotency_key)
-    with _remote() as http:
-        response = http.post(
-            "/v1/reconcile", json={"executor_ref": executor_ref, "execution_id": idempotency_key}, timeout=10
-        )
+    response = _remote().post(
+        "/v1/reconcile", json={"executor_ref": executor_ref, "execution_id": idempotency_key},
+        headers=_auth(), timeout=10,
+    )
     response.raise_for_status()
     data = response.json()
     return Reconciliation(data["status"], data.get("result"))

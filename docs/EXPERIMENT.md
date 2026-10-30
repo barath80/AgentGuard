@@ -27,11 +27,22 @@ Not "no credential at all" — that's the gateway-bypass case in `docs/EVALUATIO
 | read-ticket | 0.02 / 0.03 ms | 22.5 / 41.2 ms | +41.2 ms |
 | issue-refund | 0.02 / 0.05 ms | 26.4 / 30.8 ms | +30.7 ms |
 
+### Same comparison on Postgres 16 (actual run, 2026-10-30)
+
+`python -m agentguard.evaluation.comparison_cli --database-url postgresql+psycopg://…/agentguard_compare`, against a local Postgres 16 server (`pgserver`, same Windows machine, TCP on localhost). It ran twice, back to back with the SQLite run, while the live stack and the demo fleet were also running on the machine:
+
+| Tool | SQLite gateway p50 / p95 | Postgres gateway p50 / p95 |
+|---|---|---|
+| read-ticket | 35.2 / 53.3 ms · 34.4 / 43.1 ms | 15.7 / 29.0 ms · 13.5 / 29.3 ms |
+| issue-refund | 33.6 / 68.6 ms · 35.8 / 173.6 ms | 14.3 / 25.4 ms · 13.6 / 18.5 ms |
+
+On the same logic, Postgres roughly halves the median overhead (about 14 ms against about 34 ms) and is far steadier at p95. That supports the reading below: the cost is the sequence of commits, not policy evaluation. The security result was identical (5/5) on both databases. This is still one machine with no network between gateway and database; a managed Postgres across a network adds its round-trip time to each commit.
+
 These exact figures move around run to run (±20-30 ms on this machine, mostly disk/scheduler noise) — treat them as "tens of milliseconds," not as precise numbers to cite.
 
 **Read this carefully — it overstates the real cost:**
 
-- These numbers are in-process (no network hop for either path) and use SQLite, which commits each transaction to disk synchronously. The gateway does several sequential commits per call (decision, approval/execution state, audit event); each one pays SQLite's fsync cost. Postgres under the same logic — and a connection pool instead of a fresh SQLite connection — would very likely show meaningfully lower overhead, but that comparison needs Docker running and wasn't available when this was last run (see `SETUP.md`'s Docker Compose option to reproduce it).
+- These numbers are in-process (no network hop for either path) and use SQLite, which commits each transaction to disk synchronously. The gateway does several sequential commits per call (decision, approval/execution state, audit event); each one pays SQLite's fsync cost. The Postgres run below confirms that's where most of the cost is.
 - As a rough cross-check: the Phase 1 live-server test (`tests/test_app.py`, and the earlier manual `/v1/stats` run against a real `uvicorn` process) showed p50 ≈ 11 ms / p95 ≈ 31 ms for mixed decision latency *including* the HTTP round trip — lower than the in-process number above, which only confirms that the in-process SQLite commit pattern here, not network overhead, is the dominant cost in this specific measurement.
 - "Direct access" here does zero work — one in-memory dict lookup — so it is close to a latency floor, not a realistic baseline (a real external API call would itself take single-digit-to-double-digit milliseconds).
 

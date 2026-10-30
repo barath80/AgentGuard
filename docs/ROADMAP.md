@@ -59,7 +59,7 @@ Deferred to later phases on purpose: agent/tool CRUD endpoints (only one seeded 
 
 ## Phase 5 — Experiment & writeup
 
-- [x] Direct-access vs. gateway-enforced comparison (latency + security delta) — `python -m agentguard.evaluation.comparison_cli`, written up in [docs/EXPERIMENT.md](EXPERIMENT.md). Result: 5/5 security scenarios blocked, with an honestly-caveated latency cost (dominated by SQLite commit overhead in-process, not policy evaluation — Postgres comparison not yet run, needs Docker)
+- [x] Direct-access vs. gateway-enforced comparison (latency + security delta) — `python -m agentguard.evaluation.comparison_cli`, written up in [docs/EXPERIMENT.md](EXPERIMENT.md). Result: 5/5 security scenarios blocked, with an honestly-caveated latency cost (dominated by SQLite commit overhead in-process, not policy evaluation — confirmed by a Postgres 16 run: p50 about 14 ms against about 34 ms on SQLite)
 - [x] Schema validation against `input_schema`: unexpected arguments rejected on `write-high`/`destructive` tools (THREAT_MODEL #13) — `src/agentguard/gateway/validation.py`
 - [x] Audit log hardening (THREAT_MODEL #8): separate schema-owner and runtime roles; the runtime role gets SELECT/INSERT only on the append-only tables and DELETE nowhere (`agentguard.audit.grants`, run after each migration). Replaces the earlier REVOKE script, which didn't hold when the app connected as the table owner (it could re-grant itself). Not applicable to SQLite dev/test
 - [x] Multi-step workflow grouping and partial-completion reporting (THREAT_MODEL #18): agent-scoped `workflow_id`, console Workflows view listing partial tasks and the writes that took effect; the Claude agent and demo fleet label each ticket's handling as one workflow. Compensation stays a human decision (Phase 9)
@@ -108,4 +108,10 @@ Deferred to later phases on purpose: agent/tool CRUD endpoints (only one seeded 
 
 ## Status
 
-Phases 0–5 mostly complete. Remaining, by design rather than oversight: real network/credential isolation for gateway bypass (Phase 4), the new-idempotency-key-after-timeout duplicate window (Phase 4), a live Postgres latency comparison (Phase 5, needs Docker), multi-step workflow support (Phase 5, no current tool needs it), and risk-category snapshotting in traces (Phase 3). None of these block the system from working correctly for the 3-tool demo scope; each is called out in `docs/THREAT_MODEL.md` or above rather than silently left out.
+Phases 0–9 are implemented and tested, including on Postgres 16. What's left needs something this environment doesn't have, and none of it blocks the system working correctly:
+
+- **Live Claude red-team run** (Phase 7): needs an `ANTHROPIC_API_KEY` and costs API tokens; the harness is ready (`agentguard.evaluation.live_agent`).
+- **Running on a real Kubernetes cluster** (Phase 8): CI lints and schema-validates the chart; no cluster was available.
+- **In-cluster mTLS** (Phase 8): needs a service mesh in that cluster.
+
+Each is called out in `docs/THREAT_MODEL.md` or above rather than left out silently.

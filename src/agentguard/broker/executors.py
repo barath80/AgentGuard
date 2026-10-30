@@ -11,6 +11,7 @@ actually serves them is the configured backend:
   the test suite and the evaluation runner so they need no running services.
 """
 
+import functools
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -70,13 +71,25 @@ EXECUTORS: dict[str, Executor] = {
 # --- Real helpdesk service ---------------------------------------------------------
 
 
-def _client(credential: str, tenant_id: str | None = None, key: str | None = None) -> httpx.Client:
+@functools.cache
+def _pool(base_url: str) -> httpx.Client:
+    """One pooled client per target. Building a client is expensive (hundreds of ms for
+    the TLS context on some platforms), so per-call clients would dominate latency.
+    Credentials never live on the shared client: they go on each request."""
+    return httpx.Client(base_url=base_url, timeout=settings.broker_timeout_seconds + 5)
+
+
+def _http() -> httpx.Client:
+    return _pool(settings.helpdesk_url)
+
+
+def _headers(credential: str, tenant_id: str | None = None, key: str | None = None) -> dict[str, str]:
     headers = {"Authorization": f"Bearer {credential}"}
     if tenant_id:
         headers["X-Tenant-Id"] = tenant_id
     if key:
         headers["Idempotency-Key"] = key
-    return httpx.Client(base_url=settings.helpdesk_url, headers=headers, timeout=settings.broker_timeout_seconds + 5)
+    return headers
 
 
 def _raise_for(response: httpx.Response) -> None:
@@ -87,8 +100,7 @@ def _raise_for(response: httpx.Response) -> None:
 
 
 def _helpdesk_read_ticket(args: dict[str, Any], credential: str, _key: str, tenant: str) -> dict[str, Any]:
-    with _client(credential, tenant) as http:
-        response = http.get(f"/v1/tickets/{args['ticket_id']}")
+    response = _http().get(f"/v1/tickets/{args['ticket_id']}", headers=_headers(credential, tenant))
     if response.status_code == 404:
         return {"found": False, "ticket_id": args["ticket_id"]}
     _raise_for(response)
@@ -97,24 +109,21 @@ def _helpdesk_read_ticket(args: dict[str, Any], credential: str, _key: str, tena
 
 def _helpdesk_create_ticket(args: dict[str, Any], credential: str, key: str, tenant: str) -> dict[str, Any]:
     body = {"subject": args["subject"], **({"body": args["body"]} if "body" in args else {})}
-    with _client(credential, tenant, key) as http:
-        response = http.post("/v1/tickets", json=body)
+    response = _http().post("/v1/tickets", json=body, headers=_headers(credential, tenant, key))
     _raise_for(response)
     return response.json()
 
 
 def _helpdesk_issue_refund(args: dict[str, Any], credential: str, key: str, tenant: str) -> dict[str, Any]:
     body = {"ticket_id": args.get("ticket_id"), "amount": args["amount"], "note": args.get("note", "")}
-    with _client(credential, tenant, key) as http:
-        response = http.post("/v1/refunds", json=body)
+    response = _http().post("/v1/refunds", json=body, headers=_headers(credential, tenant, key))
     _raise_for(response)
     return response.json()
 
 
 def _helpdesk_lookup(scope: str) -> LookupFn:
     def lookup(credential: str, key: str) -> dict[str, Any] | None:
-        with _client(credential) as http:
-            response = http.get(f"/v1/writes/{key}", params={"scope": scope})
+        response = _http().get(f"/v1/writes/{key}", params={"scope": scope}, headers=_headers(credential))
         response.raise_for_status()
         record = response.json()
         return record.get("result") if record.get("applied") else None
