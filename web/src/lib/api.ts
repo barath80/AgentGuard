@@ -233,6 +233,8 @@ export interface AgentRisk {
   max_deviation: number;
   risk: "normal" | "elevated" | "high";
   calls: number;
+  windows: number;
+  flagged_windows: number;
   drivers: { feature: string; deviation: number }[];
   execution_ids: string[];
 }
@@ -240,7 +242,23 @@ export interface AgentRisk {
 export interface RiskReport {
   available: boolean;
   reason?: string;
-  model?: { trained_at: string; windows: number; agents: number };
+  model?: {
+    trained_at: string;
+    windows: number;
+    agents: number;
+    detector: string;
+    window_minutes: number;
+    evaluation: {
+      test_pr_auc?: number;
+      test_roc_auc?: number;
+      test_precision?: number;
+      test_recall?: number;
+      test_false_positive_rate?: number;
+      test_unseen_recall?: number;
+      test_windows?: number;
+      test_attack_windows?: number;
+    } | null;
+  };
   agents: AgentRisk[];
 }
 

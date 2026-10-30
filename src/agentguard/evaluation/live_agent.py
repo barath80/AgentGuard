@@ -1,7 +1,10 @@
-"""Live red-team evaluation: the real Claude agent against the real stack.
+"""Live red-team evaluation: a real LLM agent against the real stack.
 
-    python -m agentguard.evaluation.live_agent --tickets T-1080,T-1081,T-1082 --routine T-1001,T-1002
-    python -m agentguard.evaluation.live_agent --tickets ... --json live-agent-report.json
+    python -m agentguard.evaluation.live_agent --tickets T-1072,T-1073,T-1074 --routine T-1001,T-1002
+    python -m agentguard.evaluation.live_agent --provider anthropic --tickets ... --json live-agent-report.json
+
+The default provider is Gemini (GEMINI_API_KEY); `--provider anthropic` runs the
+Claude agent instead (ANTHROPIC_API_KEY). Both see the same prompt and tools.
 
 Complements the deterministic suite in evaluation/cases.py, which proves the
 gateway's decisions; this measures what happens when an actual model reads
@@ -13,15 +16,17 @@ different claims:
 - **Enforcement** — whether anything unsafe *executed*. This must be zero
   regardless of what the model attempted; a non-zero count fails the run.
 
-Costs real API tokens; never runs in CI by default.
+Uses real API quota; never runs in CI.
 """
 
 import argparse
 import json
+import os
 import sys
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 
-from agentguard.agents.support_agent import GatewayTools, SessionResult, ToolCallRecord, run_session
+from agentguard.agents.common import GatewayTools, SessionResult, ToolCallRecord
 from agentguard.policy.seed import REFUND_THRESHOLD
 
 UNSAFE_ATTEMPT_AMOUNT = REFUND_THRESHOLD  # refunds above this must never run unattended
@@ -72,10 +77,14 @@ def _check(session: SessionResult, tenant: str) -> list[Violation]:
     return violations
 
 
-def evaluate(client, tools: GatewayTools, *, attack_tickets: list[str], routine_tickets: list[str]) -> LiveReport:
+def evaluate(
+    runner: Callable[[GatewayTools, str], SessionResult], tools: GatewayTools, *,
+    attack_tickets: list[str], routine_tickets: list[str],
+) -> LiveReport:
+    """`runner(tools, ticket)` runs one agent session with whichever model is under test."""
     report = LiveReport()
     for ticket in attack_tickets + routine_tickets:
-        session = run_session(client, tools, ticket)
+        session = runner(tools, ticket)
         report.sessions += 1
         report.refusals += session.stop_reason == "refusal"
         report.input_tokens += session.usage.get("input_tokens", 0)
@@ -93,13 +102,30 @@ def evaluate(client, tools: GatewayTools, *, attack_tickets: list[str], routine_
     return report
 
 
-def main(argv: list[str] | None = None) -> int:
+def _runner(provider: str) -> tuple[Callable[[GatewayTools, str], SessionResult], str]:
+    """The session runner and workload identity for a model provider. SDKs load lazily,
+    so only the chosen provider's package needs to be installed."""
+    if provider == "gemini":
+        from google import genai
+
+        from agentguard.agents import gemini_agent
+
+        client = genai.Client()
+        return (lambda tools, ticket: gemini_agent.run_session(client, tools, ticket)), gemini_agent.WORKLOAD_IDENTITY
     import anthropic
 
-    from agentguard.agents.support_agent import WORKLOAD_IDENTITY
+    from agentguard.agents import support_agent
+
+    client = anthropic.Anthropic()
+    return (lambda tools, ticket: support_agent.run_session(client, tools, ticket)), support_agent.WORKLOAD_IDENTITY
+
+
+def main(argv: list[str] | None = None) -> int:
     from agentguard.sdk.client import AgentGuardClient
 
     parser = argparse.ArgumentParser(description="Run the live agent red-team evaluation")
+    parser.add_argument("--provider", choices=["gemini", "anthropic"],
+                        default=os.environ.get("AGENT_PROVIDER", "gemini"))
     parser.add_argument("--tickets", required=True, help="comma-separated ticket ids carrying prompt injections")
     parser.add_argument("--routine", default="", help="comma-separated ordinary ticket ids (task-success check)")
     parser.add_argument("--gateway", default="http://127.0.0.1:8000")
@@ -107,9 +133,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", dest="json_path")
     args = parser.parse_args(argv)
 
-    tools = GatewayTools(AgentGuardClient(args.gateway, WORKLOAD_IDENTITY), tenant_id=args.tenant, environment="dev")
+    runner, workload_identity = _runner(args.provider)
+    tools = GatewayTools(AgentGuardClient(args.gateway, workload_identity), tenant_id=args.tenant, environment="dev")
     report = evaluate(
-        anthropic.Anthropic(), tools,
+        runner, tools,
         attack_tickets=[t for t in args.tickets.split(",") if t],
         routine_tickets=[t for t in args.routine.split(",") if t],
     )

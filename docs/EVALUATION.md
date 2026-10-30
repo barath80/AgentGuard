@@ -52,6 +52,41 @@ Report: added p95 latency, and the security delta (how many of the adversarial c
 
 Given a proposed new policy version and a set of recorded traces, replay each trace's inputs against the new policy (not against the real tool) and report which decisions would change (allow→deny, deny→allow, etc.) without executing anything. Used to catch unintended policy regressions before publishing a new version.
 
+### Behavioural anomaly model (Phase 7)
+
+Notebook: [`notebooks/anomaly_model.ipynb`](../notebooks/anomaly_model.ipynb), executed on 2026-10-30 against the live stack. Data: 3.5 hours of a 12-agent synthetic fleet working real helpdesk tickets through the gateway. That is 1,123 one-minute behaviour windows, 158 (14.1%) of them containing attacks. Ground truth comes from the traffic generator's label file. The notebook cross-checks it against attack signatures in the trace: 350 signature calls, 0 unlabelled.
+
+The split is by time: 60% train, 20% validation, 20% test. The test split has 226 windows, 35 with attacks. The detector was chosen on validation by a score weighting known-attack PR-AUC and recall on attack types left out of training equally, so test played no part in the choice.
+
+| Detector | Test PR-AUC | Precision | Recall | False alarms | Unseen-type recall (validation) |
+|---|---|---|---|---|---|
+| **Ensemble (gradient boosting + neural autoencoder), chosen** | 0.96 | 0.89 | 0.97 | 2.1% | 1.00 |
+| Random forest | 1.00 | 1.00 | 1.00 | 0.0% | 0.25 |
+| Gradient boosting | 1.00 | 1.00 | 0.97 | 0.0% | 0.39 |
+| Neural classifier | 1.00 | 1.00 | 0.97 | 0.0% | 0.93 |
+| Isolation Forest | 0.97 | 0.85 | 1.00 | 3.1% | 0.58 |
+| Neural autoencoder | 0.79 | 0.87 | 0.97 | 2.6% | 1.00 |
+| Rule baseline, no ML ("any denial in the window") | 0.42 | 0.84 | 0.46 | 1.6% | — |
+
+How to read this:
+
+- **The rule baseline catches 0% of enumeration and refund draining.** Every call in those attacks is allowed by policy, so this is the gap the model fills.
+- **The purely supervised models look perfect on known attacks but generalise badly.** Retrained with one attack type removed, random forest catches 25% of that type and gradient boosting 39% (validation). The ensemble's autoencoder member keeps unseen-type recall at 100%, which is why it was chosen despite a slightly lower known-attack score.
+- **The `burst_calls` feature** (most calls within 10 seconds) was added after a first run showed enumeration evading every detector (14% unseen recall). With it, enumeration recall on unseen data is 100%.
+- **The robust deviation check was switched off**, decided on validation. With it, false alarms rose from 1.5% to 7.1% and nothing more was caught.
+- **These are scripted attacks in a simulated fleet.** The numbers measure detection of *these* behaviours. Real agents and real attackers will differ, so retrain and re-evaluate on your own traffic before relying on the model. It stays advisory either way: nothing on the enforcement path reads it.
+
 ## CI wiring
 
 The full routine + adversarial suite runs whenever a prompt, model, tool definition, or policy version changes (Phase 2). A change that moves the false-allow rate above 0, or materially regresses task success rate, fails CI.
+
+CI jobs (`.github/workflows/ci.yml`):
+
+- **test**: lint, the unit and adversarial suites, migrations, and the evaluation gate.
+- **postgres**: the console, gateway, grants, replay, workflow, clock-skew and adversarial suites against Postgres 16.
+- **notebook**: re-executes the anomaly-model notebook from its committed dataset, so it can't silently break.
+- **console**: the web console's typecheck, tests and build.
+- **helm**: chart lint and schema validation.
+- **images**: builds both container images.
+
+The live LLM red-team run (`agentguard.evaluation.live_agent`, Gemini by default) uses real API quota, so it runs by hand rather than in CI.

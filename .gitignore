@@ -12,3 +12,6 @@ live-agent-report.json
 # Trained model artifacts are build outputs, retrained from traces, never committed.
 models/
 .DS_Store
+# Raw ground-truth log from demo_traffic --labels; notebooks/data/windows.csv carries the labels.
+notebooks/data/attacks.jsonl
+notebooks/.ipynb_checkpoints/

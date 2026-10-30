@@ -6,7 +6,7 @@ for a human to look at, including ones that were already blocked.
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from sqlalchemy.orm import Session
 
@@ -62,14 +62,26 @@ def _control_denials(by_agent: dict[str, list[Execution]]) -> list[Finding]:
     return findings
 
 
+def _ticket_ids(session: Session, executions: list[Execution]) -> dict[str, str | None]:
+    """Ticket id per read/refund call, fetched in batches rather than one query per call."""
+    ids = [e.id for e in executions if e.tool_name in ("read-ticket", "issue-refund")]
+    tickets: dict[str, str | None] = {}
+    for i in range(0, len(ids), 500):
+        for execution_id, args in session.query(RequestPayload.execution_id, RequestPayload.args).filter(
+            RequestPayload.execution_id.in_(ids[i:i + 500])
+        ):
+            tickets[execution_id] = (args or {}).get("ticket_id")
+    return tickets
+
+
 def _refund_without_read(session: Session, by_agent: dict[str, list[Execution]]) -> list[Finding]:
     """A refund for a ticket the agent never successfully read is an unusual sequence."""
+    tickets = _ticket_ids(session, [e for rows in by_agent.values() for e in rows])
     findings = []
     for agent_id, executions in by_agent.items():
         read_tickets: set[str] = set()
         for e in executions:
-            payload = session.get(RequestPayload, e.id)
-            ticket_id = (payload.args if payload else {}).get("ticket_id")
+            ticket_id = tickets.get(e.id)
             if e.tool_name == "read-ticket" and e.outcome == "success":
                 read_tickets.add(ticket_id)
             elif e.tool_name == "issue-refund" and ticket_id not in read_tickets:
@@ -88,13 +100,15 @@ def _unresolved_timeouts(executions: list[Execution]) -> list[Finding]:
     ]
 
 
-def _clock_skew(session: Session) -> list[Finding]:
-    events = (
+def _clock_skew(session: Session, since: datetime | None) -> list[Finding]:
+    query = (
         session.query(AuditEvent, Execution.agent_id)
         .join(Execution, Execution.id == AuditEvent.execution_id)
         .filter(AuditEvent.event_type == "clock_skew")
-        .all()
     )
+    if since is not None:
+        query = query.filter(Execution.requested_at >= since)
+    events = query.all()
     return [
         Finding(
             "clock_skew", agent_id,
@@ -106,8 +120,12 @@ def _clock_skew(session: Session) -> list[Finding]:
     ]
 
 
-def detect(session: Session) -> list[Finding]:
-    executions = session.query(Execution).order_by(Execution.requested_at).all()
+def detect(session: Session, *, since: datetime | None = None) -> list[Finding]:
+    """Findings over the whole trace, or only calls requested at or after `since`."""
+    query = session.query(Execution).order_by(Execution.requested_at)
+    if since is not None:
+        query = query.filter(Execution.requested_at >= since)
+    executions = query.all()
     by_agent: dict[str, list[Execution]] = defaultdict(list)
     for e in executions:
         by_agent[e.agent_id].append(e)
@@ -117,5 +135,5 @@ def detect(session: Session) -> list[Finding]:
         *_control_denials(by_agent),
         *_refund_without_read(session, by_agent),
         *_unresolved_timeouts(executions),
-        *_clock_skew(session),
+        *_clock_skew(session, since),
     ]

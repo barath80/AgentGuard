@@ -24,11 +24,23 @@ dependencies = [
 agent = [
     "anthropic>=2.3",
 ]
+# The Gemini-powered support agent (agentguard.agents.gemini_agent); the default for the live evaluation.
+gemini = [
+    "google-genai>=2.30",
+]
 # Anomaly model training and scoring (agentguard.ml).
 ml = [
     "scikit-learn>=1.5",
     "numpy>=1.26",
     "joblib>=1.4",
+]
+# Training notebook (notebooks/anomaly_model.ipynb); use together with the ml extra.
+notebook = [
+    "jupyterlab>=4.2",
+    "nbconvert>=7.16",
+    "ipykernel>=6.29",
+    "pandas>=2.2",
+    "matplotlib>=3.9",
 ]
 dev = [
     "pytest>=8.0",

@@ -15,7 +15,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install
-        run: pip install -e ".[dev,agent,ml]"
+        run: pip install -e ".[dev,agent,gemini,ml]"
 
       - name: Lint
         run: ruff check .
@@ -76,6 +76,25 @@ jobs:
         run: |
           PGPASSWORD=agentguard psql -h localhost -U agentguard -d agentguard -c "create database agentguard_test"
           pytest -q tests/test_console.py tests/test_gateway_flow.py tests/test_controls.py tests/test_db_grants.py tests/test_replay.py tests/test_workflows.py tests/test_clock_skew.py tests/adversarial
+
+  notebook:
+    # Re-executes the training notebook from its committed dataset, so it can't silently rot.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install -e ".[ml,notebook]"
+
+      - name: Execute notebook
+        working-directory: notebooks
+        env:
+          ANOMALY_MODEL_PATH: ${{ runner.temp }}/anomaly.joblib
+        run: jupyter nbconvert --to notebook --execute anomaly_model.ipynb --output ${{ runner.temp }}/executed.ipynb --ExecutePreprocessor.timeout=900
 
   console:
     runs-on: ubuntu-latest

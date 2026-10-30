@@ -8,13 +8,16 @@ gateway and CLI use, and are recorded in `operator_actions`.
 """
 
 import json
+import math
 import re
+import threading
+import time
 from collections import Counter, defaultdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import Integer, case, cast, func
+from sqlalchemy import Integer, case, cast, func, tuple_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Query, Session
 
@@ -267,12 +270,27 @@ def list_workflows(
     if status is not None and status not in WORKFLOW_STATUSES:
         raise ConsoleError(f"status must be one of {list(WORKFLOW_STATUSES)}", status_code=422)
     since = datetime.now(UTC) - timedelta(hours=hours)
-    executions = (
-        _scoped(session.query(Execution), principal, Execution.tenant_id)
-        .filter(Execution.workflow_id.is_not(None), Execution.requested_at >= since)
-        .order_by(Execution.requested_at)
-        .all()
+    in_scope = _scoped(session.query(Execution), principal, Execution.tenant_id).filter(
+        Execution.workflow_id.is_not(None), Execution.requested_at >= since
     )
+    # Pick the workflows first, in SQL: most are completed one-step tasks that the
+    # unfinished views never show, so their steps aren't loaded at all.
+    unfinished = func.sum(case((Execution.outcome != "success", 1), else_=0))
+    last_step = func.max(Execution.requested_at)
+    groups_query = in_scope.with_entities(Execution.agent_id, Execution.workflow_id).group_by(
+        Execution.agent_id, Execution.workflow_id
+    )
+    if status == "completed":
+        groups_query = groups_query.having(unfinished == 0).order_by(last_step.desc()).limit(limit)
+    elif status is not None:
+        groups_query = groups_query.having(unfinished > 0).order_by(last_step.desc()).limit(1000)
+    else:
+        groups_query = groups_query.order_by(last_step.desc()).limit(limit)
+    keys = [tuple(k) for k in groups_query.all()]
+    executions = []
+    for i in range(0, len(keys), 300):
+        executions += in_scope.filter(tuple_(Execution.agent_id, Execution.workflow_id).in_(keys[i:i + 300])).all()
+    executions.sort(key=lambda e: _utc(e.requested_at))
     approval_ids = [e.approval_id for e in executions if e.approval_id]
     approvals = {a.id: a for a in session.query(Approval).filter(Approval.id.in_(approval_ids))} if approval_ids else {}
     risk = dict(session.query(Tool.id, Tool.risk_class).all())
@@ -773,10 +791,29 @@ def run_replay(read_session: Session, principal: Principal) -> dict[str, Any]:
 # --- Anomalies & operator log -------------------------------------------------------
 
 
-def list_anomalies(read_session: Session, principal: Principal) -> list[dict[str, Any]]:
+_anomaly_cache: dict[tuple[str, int], tuple[float, list]] = {}
+_anomaly_lock = threading.Lock()
+
+
+def _detect_cached(read_session: Session, days: int) -> list:
+    """The anomaly report scans the whole recent trace, so it's computed at most once per
+    CONSOLE_CACHE_SECONDS and shared by every viewer; each viewer still gets only their tenants."""
+    key = (str(read_session.get_bind().url), days)
+    ttl = settings.console_cache_seconds
+    with _anomaly_lock:
+        hit = _anomaly_cache.get(key)
+        if ttl > 0 and hit and time.monotonic() - hit[0] < ttl:
+            return hit[1]
+    findings = anomalies.detect(read_session, since=datetime.now(UTC) - timedelta(days=days))
+    with _anomaly_lock:
+        _anomaly_cache[key] = (time.monotonic(), findings)
+    return findings
+
+
+def list_anomalies(read_session: Session, principal: Principal, *, days: int = 7) -> list[dict[str, Any]]:
     agents = {a.id: a for a in read_session.query(Agent).all()}
     findings = []
-    for f in anomalies.detect(read_session):
+    for f in _detect_cached(read_session, days):
         agent = agents.get(f.agent_id)
         if agent is None or not principal.can_read_tenant(agent.tenant_id):
             continue
@@ -810,7 +847,15 @@ def agent_risk(read_session: Session, principal: Principal, hours: int) -> dict[
         rows.append({**row, "agent_name": agent.name, "tenant_id": agent.tenant_id})
     return {
         "available": True,
-        "model": {"trained_at": model.trained_at, "windows": model.windows, "agents": model.agents},
+        "model": {
+            "trained_at": model.trained_at, "windows": model.windows, "agents": model.agents,
+            "detector": model.detector_name, "window_minutes": model.window_seconds / 60,
+            # Held-out evaluation from the training notebook; absent for models trained without labels.
+            "evaluation": {
+                k: v for k, v in (model.metrics or {}).items()
+                if k.startswith("test_") and not (isinstance(v, float) and not math.isfinite(v))  # NaN isn't JSON
+            } or None,
+        },
         "agents": rows,
     }
 

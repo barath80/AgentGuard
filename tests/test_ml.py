@@ -71,6 +71,7 @@ def test_an_attack_window_scores_high_and_is_explained(session, trained):
     _attack_window(session)
     risk = agent_risk(session, trained, hours=1)
     assert len(risk) == 1 and risk[0]["risk"] == "high"
+    assert 1 <= risk[0]["flagged_windows"] <= risk[0]["windows"]
     drivers = {d["feature"] for d in risk[0]["drivers"]}
     assert drivers & {"tenant_mismatches", "schema_rejections", "deny_rate", "refunds_without_read", "max_refund"}
 
@@ -101,3 +102,40 @@ def test_enforcement_never_consults_the_model():
         if pattern.search(p.read_text(encoding="utf-8"))
     ]
     assert offenders == []
+
+
+def test_every_candidate_detector_trains_and_ranks_attacks_higher():
+    import numpy as np
+
+    from agentguard.ml.detectors import DETECTORS
+
+    rng = np.random.default_rng(0)
+    x = rng.normal(size=(300, len(FEATURES)))
+    y = np.zeros(300, dtype=int)
+    y[:20] = 1
+    x[:20, :4] += 4  # attacks sit well away from normal on a few features
+    for name, cls in DETECTORS.items():
+        detector = cls(seed=0).fit(x[20:] if not cls.supervised else x, None if not cls.supervised else y)
+        scores = detector.score(x)
+        assert scores[:20].mean() > scores[20:].mean(), name
+
+
+def test_supervised_detectors_need_labels_and_keep_their_settings(session, tmp_path):
+    _normal_history(session, 60, random.Random(3))
+    windows = build_windows(session)
+    with pytest.raises(ModelUnavailable, match="supervised"):
+        train(windows, min_windows=50, detector="gradient_boosting")
+    labels = [1 if i % 10 == 0 else 0 for i in range(len(windows))]
+    model = train(windows, min_windows=50, detector="gradient_boosting", labels=labels,
+                  window=timedelta(minutes=1), thresholds=(0.5, 0.9), metrics={"test_pr_auc": 0.9})
+    save(model, tmp_path / "m.joblib")
+    loaded = load(tmp_path / "m.joblib")
+    assert (loaded.detector_name, loaded.window, loaded.thresholds) == ("gradient_boosting", timedelta(minutes=1), (0.5, 0.9))
+    assert loaded.metrics == {"test_pr_auc": 0.9}
+    with pytest.raises(ValueError, match="unknown detector"):
+        train(windows, min_windows=50, detector="crystal_ball")
+
+
+def test_windows_can_be_any_length(session):
+    _normal_history(session, 10, random.Random(4))
+    assert len(build_windows(session, window=timedelta(minutes=1))) >= len(build_windows(session))

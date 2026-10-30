@@ -292,3 +292,40 @@ def test_publishing_a_stricter_policy_activates_the_next_version(client, session
     assert submit(client, "issue-refund", {"ticket_id": "T-1001", "amount": 300})["decision"] == "approval_required"
     action = session.query(OperatorAction).filter_by(action="policy.published").one()
     assert action.detail["previous_version"] == 1 and action.detail["loosening_acknowledged"] is False
+
+
+def test_anomaly_report_is_computed_once_per_cache_window_and_still_tenant_scoped(client, monkeypatch):
+    from agentguard.console import service
+    from agentguard.controls.anomalies import Finding
+
+    calls = []
+
+    def fake_detect(session, since=None):
+        calls.append(since)
+        return [Finding("denial_burst", "nobody", "x", [])]
+
+    monkeypatch.setattr(service.anomalies, "detect", fake_detect)
+    monkeypatch.setattr(settings, "console_cache_seconds", 60)
+    service._anomaly_cache.clear()
+    for token in ("ops-token", "lead-a-token", "ops-token"):
+        assert client.get("/v1/console/anomalies", headers=bearer(token)).status_code == 200
+    assert len(calls) == 1  # computed once, shared
+    service._anomaly_cache.clear()
+
+
+def test_risk_endpoint_reports_the_served_models_held_out_evaluation(client, monkeypatch):
+    from types import SimpleNamespace
+
+    from agentguard.ml import model as ml
+
+    served = SimpleNamespace(
+        trained_at="2026-10-30T09:00:00+00:00", windows=900, agents=12, detector_name="ensemble", window_seconds=60.0,
+        metrics={"detector": "ensemble", "test_pr_auc": 0.93, "test_unseen_recall": float("nan")},
+    )
+    monkeypatch.setattr(ml, "load", lambda path: served)
+    monkeypatch.setattr(ml, "agent_risk", lambda session, model, hours: [])
+    report = client.get("/v1/console/risk", headers=bearer("ops-token"))
+    assert report.status_code == 200  # NaN would make the body invalid JSON
+    model = report.json()["model"]
+    assert (model["detector"], model["window_minutes"]) == ("ensemble", 1.0)
+    assert model["evaluation"] == {"test_pr_auc": 0.93}

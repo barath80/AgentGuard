@@ -56,16 +56,23 @@ export function Legend({ items }: { items: { label: string; color: string; icon?
   );
 }
 
+const COMPACT = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 });
+
+function compact(value: number): string {
+  return COMPACT.format(value);
+}
+
 export function DecisionTimeline({ series, windowHours }: { series: SeriesBucket[]; windowHours: number }) {
   const [ref, width] = useWidth<HTMLDivElement>();
   const [hover, setHover] = useState<number | null>(null);
   const height = 220;
-  const margin = { top: 8, right: 4, bottom: 22, left: 30 };
-  const plotW = Math.max(0, width - margin.left - margin.right);
-  const plotH = height - margin.top - margin.bottom;
   const totals = series.map((b) => b.allow + b.deny + b.approval_required);
   const max = niceMax(Math.max(0, ...totals));
   const ticks = [0, 0.25, 0.5, 0.75, 1].map((t) => Math.round(t * max));
+  // Room for the widest tick label, so large counts are never clipped.
+  const margin = { top: 8, right: 4, bottom: 22, left: 14 + Math.max(...ticks.map((t) => compact(t).length)) * 7 };
+  const plotW = Math.max(0, width - margin.left - margin.right);
+  const plotH = height - margin.top - margin.bottom;
   const slot = series.length ? plotW / series.length : 0;
   const barW = Math.max(2, Math.min(28, slot * 0.64));
   const y = (v: number) => margin.top + plotH - (v / max) * plotH;
@@ -91,7 +98,7 @@ export function DecisionTimeline({ series, windowHours }: { series: SeriesBucket
                   strokeWidth={1}
                 />
                 <text x={margin.left - 8} y={y(t)} dy="0.32em" textAnchor="end" className="tabular fill-ink-3 text-[11px]">
-                  {t}
+                  {compact(t)}
                 </text>
               </g>
             ))}

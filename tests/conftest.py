@@ -12,6 +12,14 @@ from agentguard.identity.service import ResolvedIdentity, resolve_identity
 from agentguard.policy.seed import register_agent, seed
 
 
+@pytest.fixture(autouse=True)
+def _no_console_cache(monkeypatch):
+    """Each test sees its own writes immediately; the console's report cache is for live use."""
+    from agentguard.config import settings
+
+    monkeypatch.setattr(settings, "console_cache_seconds", 0)
+
+
 @pytest.fixture()
 def session(tmp_path) -> Session:
     """A fresh SQLite-backed, seeded session per test — fully isolated

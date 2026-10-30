@@ -86,37 +86,62 @@ TARGET_BACKEND=helpdesk HELPDESK_URL=http://127.0.0.1:8200 BROKER_SERVICE_TOKEN=
 
 Then `python -m agentguard.sdk.demo_traffic --rounds 3` (or `--rounds 0 --interval 60 --attack-rate 0.05` to keep a fleet working until stopped, which is how the anomaly model gets history to learn from). Its agents read real tickets and refund within the order amount; refunds land in the helpdesk's database (`helpdesk.db`). A hijacked intake agent tries cross-tenant reads, unexpected arguments and prod writes, and its circuit breaker opens.
 
-## The Claude support agent
+## The LLM support agent (Gemini or Claude)
 
-Needs `pip install -e ".[agent]"` and an `ANTHROPIC_API_KEY`. Register its identity once, then point it at tickets:
+Two interchangeable backends with the same prompt, tools and gateway path (`agentguard.agents.common`). Use whichever model you have a key for. Keys go in your environment or a secrets manager, never in the repo.
+
+**Gemini** (default for the live evaluation): `pip install -e ".[gemini]"`, then set `GEMINI_API_KEY` (from Google AI Studio). PowerShell: `$env:GEMINI_API_KEY = "..."`; bash: `export GEMINI_API_KEY=...`.
 
 ```
-python -m agentguard.controls.cli register claude-support-agent@dev-workload-pool --tenant tenant-a --owner support-eng
-python -m agentguard.agents.support_agent --ticket T-1003
-python -m agentguard.agents.support_agent --ticket T-1003 --wait-for-approval 300   # approve it in the console meanwhile
+python -m agentguard.controls.cli register gemini-support-agent@dev-workload-pool --tenant tenant-a --owner support-eng
+python -m agentguard.agents.gemini_agent --ticket T-1003
+python -m agentguard.agents.gemini_agent --ticket T-1003 --wait-for-approval 300   # approve it in the console meanwhile
 ```
 
-It uses `claude-opus-5-5` with the API's server-side refusal fallback enabled (`fallbacks: "default"`) and prompt caching on. Override with `AGENT_MODEL` / `AGENT_EFFORT`.
+It uses `gemini-2.5-flash` at temperature 0 with automatic function calling switched off, so every call the model asks for goes through the gateway. Override the model with `GEMINI_MODEL` or `--model`.
+
+**Claude**: `pip install -e ".[agent]"` and an `ANTHROPIC_API_KEY`; register `claude-support-agent@dev-workload-pool` the same way and run `python -m agentguard.agents.support_agent --ticket T-1003`. It uses `claude-opus-5-5` with the API's server-side refusal fallback (`fallbacks: "default"`) and prompt caching. Override with `AGENT_MODEL` / `AGENT_EFFORT`.
 
 The seeded helpdesk includes tickets whose bodies carry prompt injections (`python -c "import sqlite3; print(sqlite3.connect('helpdesk.db').execute(\"select id, subject from tickets where body like '%ignore your previous%' or body like '%assistant:%' or body like '%delete-production%'\").fetchall())"`). The live red-team evaluation runs the agent over them:
 
 ```
 python -m agentguard.evaluation.live_agent --tickets T-1072,T-1073,T-1074 --routine T-1001,T-1002 --json live-agent-report.json
+python -m agentguard.evaluation.live_agent --provider anthropic --tickets T-1072,T-1073,T-1074 --routine T-1001,T-1002
 ```
 
 It reports what the model attempted separately from what executed, and exits non-zero if anything unsafe executed. It costs real tokens, so it isn't in CI.
 
 ## Behavioural anomaly model
 
-Needs `pip install -e ".[ml]"`. Train it from recorded traces (read-only connection), then see risk per agent in the console's Insights page or on the command line:
+Needs `pip install -e ".[ml]"`. The model is advisory: nothing on the enforcement path reads it.
+
+**Train and evaluate it in the notebook** (`pip install -e ".[ml,notebook]"`, then `jupyter lab notebooks/anomaly_model.ipynb`). The notebook:
+- builds 1-minute behaviour windows from the trace;
+- labels them from the traffic generator's ground truth;
+- splits them by time into train, validation and test;
+- compares eight detectors (Isolation Forest, LOF, One-Class SVM, a neural autoencoder, gradient boosting, random forest, a neural classifier, and an ensemble);
+- picks the best on validation, reports it on test, and checks recall on attack types it never saw;
+- saves the winner to `models/anomaly.joblib`, where the console reads it.
+
+To produce fresh labelled data, run the fleet against a live stack for an hour or two, then point the notebook at it:
 
 ```
-python -m agentguard.ml.model train            # refuses with fewer than --min-windows (default 50) 15-minute windows
-python -m agentguard.ml.model train --since 2026-10-30T03:40   # learn only from a period you trust
+python -m agentguard.sdk.demo_traffic --rounds 0 --interval 15 --fleet-size 3 --attack-rate 0.02 --stealth-rate 0.15 --labels notebooks/data/attacks.jsonl
+cd notebooks
+DATABASE_URL=sqlite:///../agentguard.db AGENTGUARD_DATA_SINCE=<when the fleet started, ISO 8601> jupyter lab anomaly_model.ipynb
+```
+
+Without `DATABASE_URL`, the notebook uses the dataset committed in `notebooks/data/windows.csv`, so it reruns anywhere (CI executes it on every push).
+
+**Or train an unsupervised model from the command line**, with no labels needed:
+
+```
+python -m agentguard.ml.model train --detector autoencoder --window-minutes 1   # or isolation_forest (default), one_class_svm, local_outlier_factor
+python -m agentguard.ml.model train --since 2026-10-30T03:40                    # learn only from a period you trust
 python -m agentguard.ml.model score
 ```
 
-It's advisory: nothing on the enforcement path reads it. It learns "normal" from whatever traffic it's trained on, so train it on a period you trust.
+It learns "normal" from whatever traffic it's trained on, so train it on a period you trust.
 
 ## Option B — Docker Compose (Postgres + Redis + app)
 
@@ -159,7 +184,8 @@ Copy `.env.example` to `.env` and adjust if needed — defaults work for both op
 | `OIDC_ALLOWED_ROLES` | `operator,viewer,support-lead` | IdP roles that mean anything here; everything else in the token is ignored |
 | `CONSOLE_STATIC_TOKENS` | `true` | Static console tokens (dev / break-glass). Set `false` in production |
 | `ANOMALY_MODEL_PATH` | `models/anomaly.joblib` | Where the trained anomaly model is written and read |
-| `ANTHROPIC_API_KEY` | unset | Only for the Claude support agent and the live red-team evaluation |
+| `GEMINI_API_KEY` | unset | For the Gemini support agent and the live red-team evaluation (default provider). `GEMINI_MODEL` picks the model |
+| `ANTHROPIC_API_KEY` | unset | Only for the Claude support agent (`--provider anthropic`) |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | Enables OpenTelemetry trace export over OTLP/HTTP, e.g. `http://localhost:4318` |
 
 Per-agent limits (`rate_limit_per_minute`, `daily_spend_limit`) are columns on the agent record, set when the agent is registered (see `register_agent` in `src/agentguard/policy/seed.py`).

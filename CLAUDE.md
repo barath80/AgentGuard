@@ -38,7 +38,7 @@ See [SETUP.md](SETUP.md) for full steps (native venv+SQLite or Docker Compose). 
 - `src/agentguard/mock_systems.py` — the fake target systems; they enforce credential scopes and idempotency like a real API would.
 - `src/agentguard/audit/` — append-only decision/outcome log.
 - `src/agentguard/sdk/` — client adapter agents use to call through the gateway; `demo_traffic.py` sends synthetic traffic for the console.
-- `src/agentguard/agents/` — the Claude-powered support agent. Acts only through the gateway; must never import the broker.
+- `src/agentguard/agents/` — the LLM support agent: shared prompt/tools/gateway mapping in `common.py`, model loops for Gemini (`gemini_agent.py`) and Claude (`support_agent.py`). Acts only through the gateway; must never import the broker.
 - `src/agentguard/ml/` — advisory behavioural anomaly model. No enforcement module (gateway, policy, approval, broker, controls, identity) may import it (enforced by `tests/test_ml.py`).
 - `src/helpdesk/` — the ticketing/billing target service. A separate system: must never import `agentguard` (enforced by `tests/test_helpdesk.py`).
 - `deploy/` — Helm chart and Keycloak realm.

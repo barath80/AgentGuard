@@ -89,8 +89,10 @@ Deferred to later phases on purpose: agent/tool CRUD endpoints (only one seeded 
 - [x] Live red-team evaluation (`agentguard.evaluation.live_agent`): model attempts vs. executed violations vs. routine task success. Costs API tokens, so not in CI
 - [x] Behavioural anomaly model (`agentguard.ml`): Isolation Forest + robust per-feature deviation over 15-minute windows, explained by top deviating features, advisory only (enforcement modules may not import it — tested); nightly retraining CronJob; console "Behavioural risk" panel
 - [x] Agent registration from the CLI (`controls.cli register`)
-- [ ] Run the live red-team evaluation with a real `ANTHROPIC_API_KEY` and record the results in `docs/EXPERIMENT.md`
-- [ ] Train the anomaly model on enough real history (it refuses below `--min-windows`); today's traces span too short a period to mean anything
+- [x] Gemini backend for the support agent (`agentguard.agents.gemini_agent`), sharing prompt, tools and gateway path with the Claude one; the live evaluation takes `--provider gemini|anthropic` (Gemini by default)
+- [ ] Run the live red-team evaluation with a real `GEMINI_API_KEY` and record the results in `docs/EXPERIMENT.md`
+- [x] Trained and evaluated on 3.5 h of labelled fleet traffic: ensemble (gradient boosting + neural autoencoder) chosen for known-attack accuracy *and* unseen-attack recall; test PR-AUC 0.96, precision 0.89, recall 0.97, 2.1% false alarms, 100% recall on held-out attack types (`docs/EVALUATION.md`)
+- [x] Training notebook (`notebooks/anomaly_model.ipynb`): labelled fleet traffic including stealth attacks policy allows, 1-minute windows, time-based train/validation/test split, eight detectors compared (unsupervised, supervised, neural, ensemble), recall on unseen attack types, winner saved for the console. CI re-executes it from the committed dataset
 
 ## Phase 8 — Deployment
 
@@ -111,7 +113,7 @@ Deferred to later phases on purpose: agent/tool CRUD endpoints (only one seeded 
 
 Phases 0–9 are implemented and tested, including on Postgres 16. What's left needs something this environment doesn't have, and none of it blocks the system working correctly:
 
-- **Live Claude red-team run** (Phase 7): needs an `ANTHROPIC_API_KEY` and costs API tokens; the harness is ready (`agentguard.evaluation.live_agent`).
+- **Live red-team run with a real model** (Phase 7): needs a `GEMINI_API_KEY` (or an Anthropic key); the harness is ready (`agentguard.evaluation.live_agent`).
 - **Running on a real Kubernetes cluster** (Phase 8): CI lints and schema-validates the chart; no cluster was available.
 - **In-cluster mTLS** (Phase 8): needs a service mesh in that cluster.
 

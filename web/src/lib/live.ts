@@ -26,6 +26,35 @@ export function parseFrame(frame: string): { event: string; data: unknown } | nu
 }
 
 /**
+ * Run `fn` at most once per `ms`: the first call runs now, later calls inside the window are
+ * coalesced into a single trailing run. Returns the throttled function and a cancel.
+ */
+export function throttle(fn: () => void, ms: number): { run: () => void; cancel: () => void } {
+  let last = -Infinity;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const fire = () => {
+    timer = null;
+    last = Date.now();
+    fn();
+  };
+  return {
+    run() {
+      if (timer) return;
+      const wait = last + ms - Date.now();
+      if (wait <= 0) fire();
+      else timer = setTimeout(fire, wait);
+    },
+    cancel() {
+      if (timer) clearTimeout(timer);
+      timer = null;
+    },
+  };
+}
+
+// Heavy views refresh at most this often while traffic streams in; approvals refresh at once.
+const BULK_REFRESH_MS = 5000;
+
+/**
  * Subscribe to /v1/console/stream. Uses fetch rather than EventSource so the token travels in
  * the Authorization header, never in a URL. Reconnects with backoff; while offline, the
  * queries' own slower refetch intervals keep the views fresh.
@@ -38,6 +67,11 @@ export function useLiveUpdates(onChange?: (change: ChangeEvent) => void): LiveSt
     let stopped = false;
     let controller: AbortController | null = null;
     let retry = 1000;
+    const refreshViews = throttle(() => {
+      for (const key of ["overview", "executions", "agents", "workflows"]) {
+        queryClient.invalidateQueries({ queryKey: [key] });
+      }
+    }, BULK_REFRESH_MS);
 
     async function connect() {
       while (!stopped) {
@@ -69,9 +103,7 @@ export function useLiveUpdates(onChange?: (change: ChangeEvent) => void): LiveSt
               } else if (frame.event === "change") {
                 const change = frame.data as ChangeEvent;
                 if (change.executions.length) {
-                  queryClient.invalidateQueries({ queryKey: ["overview"] });
-                  queryClient.invalidateQueries({ queryKey: ["executions"] });
-                  queryClient.invalidateQueries({ queryKey: ["agents"] });
+                  refreshViews.run();
                   for (const e of change.executions) queryClient.invalidateQueries({ queryKey: ["execution", e.id] });
                 }
                 if (change.approvals.length) queryClient.invalidateQueries({ queryKey: ["approvals"] });
@@ -93,6 +125,7 @@ export function useLiveUpdates(onChange?: (change: ChangeEvent) => void): LiveSt
     connect();
     return () => {
       stopped = true;
+      refreshViews.cancel();
       controller?.abort();
     };
   }, [queryClient, onChange]);

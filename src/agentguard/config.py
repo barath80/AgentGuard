@@ -45,6 +45,8 @@ class Settings(BaseSettings):
 
     # Behavioural anomaly model (agentguard.ml). Advisory only; never consulted for decisions.
     anomaly_model_path: str = "models/anomaly.joblib"
+    # Seconds the console may reuse an expensive full-trace report (anomaly findings). 0 disables.
+    console_cache_seconds: float = 10.0
 
 
 settings = Settings()

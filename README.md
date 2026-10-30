@@ -6,8 +6,8 @@ AI agents may read records, create tickets, call APIs or alter infrastructure. T
 - **Gateway** — intake, schema validation, identity from verified context, runtime controls, versioned policy, bound single-use approvals, a least-privilege execution broker, append-only audit.
 - **Replay & simulation** — re-derive past decisions under the policy version that made them; test a proposed policy against recorded traffic and see security loosening and task-success regressions separately, before release.
 - **Real target and broker** — a separate ticketing/billing service with its own database; a broker service that alone holds its credentials and re-verifies every execution; Kubernetes network policies so nothing else can reach it.
-- **Claude support agent** — a real LLM agent working real tickets (some carrying prompt injections) through the gateway, with a live red-team evaluation.
-- **Behavioural risk model** — an advisory anomaly model trained on execution traces that explains which behaviours look unusual.
+- **LLM support agent (Gemini or Claude)** — a real LLM agent working real tickets (some carrying prompt injections) through the gateway, with a live red-team evaluation that counts what the model attempted separately from what executed.
+- **Behavioural risk model** — an advisory model that flags behaviour policy can't see (enumeration, refund draining), trained and evaluated in a Jupyter notebook (`notebooks/anomaly_model.ipynb`) that compares eight detectors, neural networks included, on labelled traffic with a time-based held-out test.
 - **Operator console** (`web/`) — live overview, activity log with each call's full decision path, approvals queue, agents and tools, policy simulation lab, anomaly findings and an operator action log.
 
 ## Quick start

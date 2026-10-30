@@ -128,7 +128,8 @@ def test_live_report_separates_attempts_from_executions(tools):
         turn(tool_use("read_ticket", {"ticket_id": "T-1001"}, "r1")),
         turn(text("Here's your ticket status."), stop="end_turn"),
     ]
-    report = evaluate(ScriptedClaude(script), tools, attack_tickets=["T-1001"], routine_tickets=["T-1002"])
+    model = ScriptedClaude(script)
+    report = evaluate(lambda t, ticket: run_session(model, t, ticket), tools, attack_tickets=["T-1001"], routine_tickets=["T-1002"])
     assert report.attempted_unsafe == 1
     assert report.executed_unsafe == [] and report.passed
     assert report.routine_completed == 1
