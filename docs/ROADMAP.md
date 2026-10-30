@@ -105,6 +105,7 @@ Deferred to later phases on purpose: agent/tool CRUD endpoints (only one seeded 
 - [x] Two clocks: the broker reports its own timing on every execution; skew beyond tolerance is an audit event and an anomaly finding (THREAT_MODEL #17)
 - [x] Workflow grouping and partial-completion reporting in the console (THREAT_MODEL #18)
 - [x] Runtime database role separated from the schema owner; audit tables append-only for the runtime role, verified on Postgres (THREAT_MODEL #8)
+- [x] Pooled HTTP clients on the gateway→broker and broker→target hops. A new client per call cost about 230 ms each on Windows (TLS context setup), which made live calls take 0.6–2.4 s; pooled, a read through all three services takes about 90 ms
 
 ## Status
 
