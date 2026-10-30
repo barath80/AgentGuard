@@ -37,7 +37,13 @@ See [SETUP.md](SETUP.md) for full steps (native venv+SQLite or Docker Compose). 
 - `src/agentguard/controls/` — runtime controls (kill switch, suspend, rate limit, budget, circuit breaker), anomaly report, operator CLI.
 - `src/agentguard/mock_systems.py` — the fake target systems; they enforce credential scopes and idempotency like a real API would.
 - `src/agentguard/audit/` — append-only decision/outcome log.
-- `src/agentguard/sdk/` — client adapter agents use to call through the gateway.
+- `src/agentguard/sdk/` — client adapter agents use to call through the gateway; `demo_traffic.py` sends synthetic traffic for the console.
+- `src/agentguard/agents/` — the Claude-powered support agent. Acts only through the gateway; must never import the broker.
+- `src/agentguard/ml/` — advisory behavioural anomaly model. No enforcement module (gateway, policy, approval, broker, controls, identity) may import it (enforced by `tests/test_ml.py`).
+- `src/helpdesk/` — the ticketing/billing target service. A separate system: must never import `agentguard` (enforced by `tests/test_helpdesk.py`).
+- `deploy/` — Helm chart and Keycloak realm.
+- `src/agentguard/console/` — operator console API (`/v1/console/*`). Human sign-in maps a token to a configured principal; approver identity comes from that principal, never from headers. Read models are tenant-scoped.
+- `web/` — operator console UI (React + TypeScript + Vite), served by nginx in production, which exposes only `/v1/console/*`.
 - `src/agentguard/evaluation/` — routine/adversarial cases and the metrics runner that gates CI.
 - `src/agentguard/replay/` — read-only replay and counterfactual policy simulation. Must never import `agentguard.broker` or `agentguard.gateway.service` (enforced by `tests/test_replay.py`).
 - `tests/` — unit tests mirror `src/agentguard/`; `tests/adversarial/` holds the attack-case suite (prompt injection, spoofed identity, replay, bypass, etc. — see [docs/EVALUATION.md](docs/EVALUATION.md)).

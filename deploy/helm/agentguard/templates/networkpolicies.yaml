@@ -1,0 +1,170 @@
+{{- if .Values.networkPolicies.enabled }}
+{{- $fullname := include "agentguard.fullname" . -}}
+{{- $dns := .Values.networkPolicies.dnsNamespaceSelector -}}
+# Default deny, then only the paths the architecture needs. This is what turns "only the broker
+# holds target credentials" into "only the broker can even reach the target" (THREAT_MODEL #7).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-default-deny
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-dns
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector: {{- toYaml $dns | nindent 12 }}
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+---
+# Gateway: called by agents and the console; calls the broker, the database and the IdP's key endpoint.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-gateway
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "agentguard.selector" (dict "ctx" . "component" "gateway") | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector: {{- toYaml .Values.gateway.agentNamespaceSelector | nindent 12 }}
+        - podSelector:
+            matchLabels:
+              {{- include "agentguard.selector" (dict "ctx" . "component" "console") | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 8000 }
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "agentguard.selector" (dict "ctx" . "component" "broker") | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 8100 }
+    - to:
+        - ipBlock: { cidr: {{ .Values.database.egressCIDR }} }
+      ports:
+        - { protocol: TCP, port: {{ .Values.database.port }} }
+    - to:
+        - ipBlock: { cidr: {{ .Values.networkPolicies.idpEgressCIDR }} }
+      ports:
+        - { protocol: TCP, port: 443 }
+        - { protocol: TCP, port: 4318 }
+---
+# Broker: only the gateway may call it; it may only reach the helpdesk and the database.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-broker
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "agentguard.selector" (dict "ctx" . "component" "broker") | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "agentguard.selector" (dict "ctx" . "component" "gateway") | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 8100 }
+  egress:
+    {{- if .Values.helpdesk.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "agentguard.selector" (dict "ctx" . "component" "helpdesk") | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 8200 }
+    {{- else }}
+    # External target: allow HTTPS out. Narrow this to the target's address range.
+    - ports:
+        - { protocol: TCP, port: 443 }
+    {{- end }}
+    - to:
+        - ipBlock: { cidr: {{ .Values.database.egressCIDR }} }
+      ports:
+        - { protocol: TCP, port: {{ .Values.database.port }} }
+{{- if .Values.helpdesk.enabled }}
+---
+# Helpdesk: reachable from the broker and nothing else.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-helpdesk
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "agentguard.selector" (dict "ctx" . "component" "helpdesk") | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "agentguard.selector" (dict "ctx" . "component" "broker") | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 8200 }
+  egress:
+    - to:
+        - ipBlock: { cidr: {{ .Values.database.egressCIDR }} }
+      ports:
+        - { protocol: TCP, port: {{ .Values.database.port }} }
+{{- end }}
+{{- if .Values.console.enabled }}
+---
+# Console: reachable from the ingress controller; may only call the gateway.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-console
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "agentguard.selector" (dict "ctx" . "component" "console") | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.console.ingressControllerNamespace }}
+      ports:
+        - { protocol: TCP, port: 8080 }
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "agentguard.selector" (dict "ctx" . "component" "gateway") | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 8000 }
+{{- end }}
+---
+# Migration and training jobs: database only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-jobs
+spec:
+  podSelector:
+    matchExpressions:
+      - { key: app.kubernetes.io/instance, operator: In, values: [{{ .Release.Name | quote }}] }
+      - { key: app.kubernetes.io/component, operator: In, values: [migrate, train] }
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock: { cidr: {{ .Values.database.egressCIDR }} }
+      ports:
+        - { protocol: TCP, port: {{ .Values.database.port }} }
+{{- end }}

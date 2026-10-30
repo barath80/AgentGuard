@@ -15,7 +15,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,agent,ml]"
 
       - name: Lint
         run: ruff check .
@@ -38,3 +38,62 @@ jobs:
         with:
           name: evaluation-report
           path: evaluation-report.json
+
+  console:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Production build
+        run: npm run build
+
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+
+      - name: Lint chart
+        run: helm lint deploy/helm/agentguard
+
+      - name: Render and validate manifests
+        run: |
+          curl -sSfL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz kubeconform
+          helm template agentguard deploy/helm/agentguard > rendered.yaml
+          helm template agentguard deploy/helm/agentguard --set helpdesk.enabled=false --set helpdesk.targetUrl=https://helpdesk.example.com >> rendered.yaml
+          ./kubeconform -strict -summary rendered.yaml
+
+  images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build gateway image
+        run: docker build -t agentguard:ci .
+
+      - name: Build console image
+        run: docker build -t agentguard-console:ci web
+
+      - name: Image runs as a non-root user
+        run: test "$(docker run --rm agentguard:ci id -u)" = "10001"

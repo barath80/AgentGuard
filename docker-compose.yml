@@ -32,8 +32,18 @@ services:
       REDIS_URL: redis://redis:6379/0
       ENVIRONMENT: development
       OPERATOR_TOKEN: dev-only-operator-token
+      # Synthetic dev principals (tokens in .env.example); only hashes are configured.
+      CONSOLE_PRINCIPALS: '[{"name":"dana","roles":["support-lead"],"tenants":["tenant-a"],"token_sha256":"f1d597e972dd03cca37f841890663b9f1d1008c3101e446902b7a4ddc8a7ec39"},{"name":"sam","roles":["viewer"],"tenants":["*"],"token_sha256":"47f7ef3bb04360981002cb122d067961c1b7c0d0a6da9fe5eef8a6bdbc1bf085"}]'
       # Empty disables tracing; set it to http://jaeger:4318 when running with --profile observability.
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      # Tool calls run in the broker service; the gateway holds no target credentials.
+      TARGET_BACKEND: helpdesk
+      BROKER_URL: http://broker:8100
+      # Console sign-in through Keycloak. The issuer is the browser-facing URL (it's what tokens
+      # carry in `iss`); keys are fetched over the internal network.
+      OIDC_ISSUER: http://localhost:8081/realms/agentguard
+      OIDC_JWKS_URL: http://keycloak:8080/realms/agentguard/protocol/openid-connect/certs
+      BROKER_SERVICE_TOKEN: ${BROKER_SERVICE_TOKEN:-dev-only-broker-service-token}
     ports:
       - "8000:8000"
     depends_on:
@@ -41,6 +51,87 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+
+  # The only service given target credentials, and the only one that talks to the helpdesk.
+  broker:
+    build: .
+    command: ["uvicorn", "agentguard.broker.server:app", "--host", "0.0.0.0", "--port", "8100"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8100/healthz')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    environment:
+      DATABASE_URL: postgresql+psycopg://agentguard:agentguard@postgres:5432/agentguard
+      TARGET_BACKEND: helpdesk
+      HELPDESK_URL: http://helpdesk:8200
+      BROKER_SERVICE_TOKEN: ${BROKER_SERVICE_TOKEN:-dev-only-broker-service-token}
+      # Synthetic defaults; in production these come from a secrets manager.
+      AGENTGUARD_CRED_TICKETS_READ: ${AGENTGUARD_CRED_TICKETS_READ:-dev-only-tickets:read}
+      AGENTGUARD_CRED_TICKETS_WRITE: ${AGENTGUARD_CRED_TICKETS_WRITE:-dev-only-tickets:write}
+      AGENTGUARD_CRED_BILLING_REFUND: ${AGENTGUARD_CRED_BILLING_REFUND:-dev-only-billing:refund}
+    depends_on:
+      app:
+        condition: service_healthy
+      helpdesk:
+        condition: service_healthy
+
+  # The ticketing/billing system the tools act on, with its own database. Not published to the host.
+  helpdesk:
+    build: .
+    command: ["sh", "-c", "python -m helpdesk.seed && uvicorn helpdesk.app:app --host 0.0.0.0 --port 8200"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8200/readyz')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    environment:
+      HELPDESK_DATABASE_URL: postgresql+psycopg://helpdesk:helpdesk@helpdesk-db:5432/helpdesk
+      # JSON {scope: sha256(credential)}; empty means the synthetic dev credentials.
+      HELPDESK_SCOPE_TOKENS: ${HELPDESK_SCOPE_TOKENS:-}
+    depends_on:
+      helpdesk-db:
+        condition: service_healthy
+
+  helpdesk-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: helpdesk
+      POSTGRES_PASSWORD: helpdesk
+      POSTGRES_DB: helpdesk
+    volumes:
+      - helpdesk_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U helpdesk"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  console:
+    build: ./web
+    environment:
+      GATEWAY_UPSTREAM: http://app:8000
+      OIDC_ORIGIN: http://localhost:8081
+    ports:
+      - "8080:8080"
+    depends_on:
+      app:
+        condition: service_healthy
+
+  # Identity provider for console sign-in, with a synthetic dev realm (deploy/keycloak/).
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0.7
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-dev-only-admin}
+      KC_HOSTNAME: http://localhost:8081
+      KC_HTTP_ENABLED: "true"
+      KC_HEALTH_ENABLED: "true"
+    volumes:
+      - ./deploy/keycloak:/opt/keycloak/data/import:ro
+    ports:
+      - "8081:8080"
 
   jaeger:
     image: jaegertracing/all-in-one:1.62.0
@@ -53,3 +144,4 @@ services:
 
 volumes:
   agentguard_pg_data:
+  helpdesk_pg_data:

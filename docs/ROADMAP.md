@@ -54,8 +54,8 @@ Deferred to later phases on purpose: agent/tool CRUD endpoints (only one seeded 
 - [x] Broker timeouts return immediately (previously the worker thread blocked the response — a Phase 1 bug), and timed-out writes are reconciled against the target system's idempotency record, including when the agent retries with the same key; never re-executed
 - [x] Least-privilege credentials: one scope per executor, enforced by the target system; only `agentguard.broker` can obtain them (static inventory test), and the agent SDK never loads the broker
 - [x] Gateway-bypass evaluation case (moved from Phase 2)
-- [ ] Real deployment isolation for bypass prevention: broker as a separate service/container holding the secrets, with network policy so only it can reach targets. In-process, the credential inventory is a code-level guarantee, not a runtime one.
-- [ ] A late-landing write that reconciliation hasn't observed yet stays `timeout` until the agent retries with the same key; if the agent instead retries with a *new* key, a duplicate is still possible. Needs downstream idempotency keyed on the business action, or an operator workflow for unresolved timeouts (they're surfaced in stats and the anomaly report).
+- [x] Real deployment isolation for bypass prevention: broker as a separate service holding the secrets (`agentguard.broker.server`), re-verifying each execution, with network policy so only it can reach targets (`deploy/helm`, Phase 8)
+- [x] Duplicate refunds after a timeout retried with a *new* key: the helpdesk now enforces a business-level rule — total refunds on a ticket can never exceed the order amount — whatever idempotency keys are used. Ticket creation can still duplicate in that case (low risk; surfaced as unresolved timeouts)
 
 ## Phase 5 — Experiment & writeup
 
@@ -64,6 +64,41 @@ Deferred to later phases on purpose: agent/tool CRUD endpoints (only one seeded 
 - [x] Audit log hardening: `sql/postgres_audit_role.sql` revokes UPDATE/DELETE/TRUNCATE on `audit_events` from the app's DB role for production Postgres (THREAT_MODEL #8). Not applied to SQLite dev/test (no equivalent grant model)
 - [ ] Multi-step workflow grouping and partial-completion reporting (THREAT_MODEL #18) — deferred: none of the 3 mock tools have a real compensating action, so building this now would be speculative rather than tested against a real need
 - [ ] Final threat-model pass confirming every row has a test case — done for all rows except #17 (clock skew: only one clock is recorded, not cross-checked) and #18 above
+
+## Phase 6 — Operator console
+
+- [x] Console API (`src/agentguard/console/`, mounted at `/v1/console`): overview metrics and decision time series, filterable activity log, per-call decision path with audit timeline, approvals queue, agent/tool registry views, policy versions, counterfactual simulation and replay, anomalies
+- [x] Human sign-in separate from agent identity: bearer token → configured principal (roles + tenants; only token hashes configured). Approver identity comes from the principal, never headers; `*` read access never grants approval authority (adversarial tests in `tests/adversarial/test_console_approvals.py`)
+- [x] Tenant-scoped reads (404 for other tenants' objects), request payloads hidden from `viewer` principals, simulation/replay on a database-enforced read-only session and limited to all-tenant readers
+- [x] Append-only `operator_actions` table for console actions (approval decisions, suspend/resume), covered by `sql/postgres_audit_role.sql`
+- [x] `/healthz` (liveness) and `/readyz` (database reachable) probes; the container healthcheck gates the console in Compose
+- [x] Web console (`web/`): React + TypeScript + Vite, light/dark, responsive to phone width, live polling; nginx container with CSP and security headers that exposes only `/v1/console/*` (agent endpoints aren't reachable through it)
+- [x] Synthetic traffic generator (`python -m agentguard.sdk.demo_traffic`) and a CI job for console typecheck, unit tests and build
+- [x] OIDC sign-in for the console: JWTs verified against the IdP's keys (issuer, audience, expiry), roles filtered to an allowlist, tenants from a claim; Keycloak realm in `deploy/keycloak/`; PKCE public client in the web app. Static tokens remain for dev/break-glass (`CONSOLE_STATIC_TOKENS=false` disables them). Verified with signed test tokens; the Keycloak realm itself hasn't been run in this environment (needs Docker)
+- [ ] Retire or proxy-protect the header-based `/v1/approvals/{id}/decide` now that the console route exists
+- [x] Live updates over SSE (`/v1/console/stream`), read with fetch so the token never goes in a URL; tenant-scoped change events; polling drops to a one-minute fallback
+- [ ] Overview aggregates in SQL rather than Python — fine at demo volume, not at production volume
+- [x] Kubernetes Helm chart (`deploy/helm/agentguard`) — see Phase 8
+- [ ] Registry CRUD (register agents/tools, publish a policy version from a simulated proposal) — console views are read-only today
+
+## Phase 7 — Real agent, real target, learned risk
+
+- [x] Helpdesk target service (`src/helpdesk/`): its own database and API, per-scope credentials (hashes only), tenant boundary enforced on real records, idempotency records for reconciliation, refund cap per order. Never imports `agentguard`
+- [x] Executors with logical refs (`billing.refund`) and two backends: the real helpdesk over HTTP, or the in-process test double for tests and the evaluation gate (`TARGET_BACKEND`)
+- [x] Claude-powered support agent (`agentguard.agents.support_agent`): tools map to gateway calls; tenant and environment come from the agent's own configuration; refusal fallback and prompt caching on; can wait for a human approval and then execute
+- [x] Live red-team evaluation (`agentguard.evaluation.live_agent`): model attempts vs. executed violations vs. routine task success. Costs API tokens, so not in CI
+- [x] Behavioural anomaly model (`agentguard.ml`): Isolation Forest + robust per-feature deviation over 15-minute windows, explained by top deviating features, advisory only (enforcement modules may not import it — tested); nightly retraining CronJob; console "Behavioural risk" panel
+- [x] Agent registration from the CLI (`controls.cli register`)
+- [ ] Run the live red-team evaluation with a real `ANTHROPIC_API_KEY` and record the results in `docs/EXPERIMENT.md`
+- [ ] Train the anomaly model on enough real history (it refuses below `--min-windows`); today's traces span too short a period to mean anything
+
+## Phase 8 — Deployment
+
+- [x] Compose topology: gateway, separate broker, helpdesk with its own Postgres, Keycloak, console
+- [x] Helm chart: per-role Deployments, pre-upgrade migration Job, HPA and PDBs, default-deny NetworkPolicies, non-root read-only containers, secrets only by reference to externally managed Secrets
+- [x] CI renders and schema-validates the chart and builds both images
+- [ ] Render the chart and run it on a real cluster (Helm wasn't available in this environment; CI covers lint and schema)
+- [ ] In-cluster mTLS (service mesh) between gateway, broker and target
 
 ## Status
 

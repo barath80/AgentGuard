@@ -1,0 +1,134 @@
+# AgentGuard Helm values.
+#
+# Secrets are never set here. Each `existingSecret` names a Kubernetes Secret you create
+# out of band — typically synced from a cloud secrets manager by External Secrets Operator
+# or the Secrets Store CSI driver. See deploy/helm/README.md for the keys each one needs.
+
+image:
+  repository: ghcr.io/your-org/agentguard          # gateway, broker, helpdesk, jobs
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+consoleImage:
+  repository: ghcr.io/your-org/agentguard-console
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+environment: production
+
+database:
+  # Secret with key DATABASE_URL (e.g. postgresql+psycopg://user:pass@host:5432/agentguard).
+  existingSecret: agentguard-database
+  # Where the database lives, for the egress network policy. Managed Postgres is usually outside the cluster.
+  egressCIDR: 10.0.0.0/8
+  port: 5432
+
+gateway:
+  replicas: 2
+  resources:
+    requests: { cpu: 250m, memory: 256Mi }
+    limits: { memory: 512Mi }
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+  # Pods allowed to call the gateway's agent API (/v1/tool-calls), matched by namespace label.
+  agentNamespaceSelector:
+    matchLabels:
+      agentguard.io/agents: "true"
+  extraEnv: {}
+
+broker:
+  replicas: 2
+  resources:
+    requests: { cpu: 100m, memory: 192Mi }
+    limits: { memory: 384Mi }
+  timeoutSeconds: 5
+  # Secret with keys BROKER_SERVICE_TOKEN, AGENTGUARD_CRED_TICKETS_READ, AGENTGUARD_CRED_TICKETS_WRITE,
+  # AGENTGUARD_CRED_BILLING_REFUND. Mounted into the broker only — the gateway gets just the service token.
+  existingSecret: agentguard-broker
+
+console:
+  enabled: true
+  replicas: 2
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { memory: 128Mi }
+  ingress:
+    enabled: true
+    className: nginx
+    host: agentguard.example.com
+    tls:
+      secretName: agentguard-console-tls
+    annotations: {}
+  # Namespace of the ingress controller, for the console's ingress network policy.
+  ingressControllerNamespace: ingress-nginx
+
+auth:
+  oidc:
+    # Issuer exactly as it appears in tokens' `iss`. Empty disables OIDC.
+    issuer: "https://sso.example.com/realms/agentguard"
+    clientId: agentguard-console
+    jwksUrl: ""
+    allowedRoles: "operator,viewer,support-lead"
+    # Origin the browser talks to for sign-in (added to the console CSP).
+    browserOrigin: "https://sso.example.com"
+  # Static console tokens are for local dev and break-glass; keep them off in production.
+  staticTokens: false
+  # Optional Secret with OPERATOR_TOKEN and/or CONSOLE_PRINCIPALS, for break-glass access.
+  staticTokensSecret: ""
+
+controls:
+  killSwitch: false
+  allowReadsWhenPolicyUnavailable: false
+  breakerThreshold: 5
+  breakerWindowSeconds: 300
+  approvalExpirySeconds: 900
+
+# The ticketing/billing service the tools act on. Enable to run the bundled one in-cluster;
+# disable and set targetUrl to point the broker at an existing system.
+helpdesk:
+  enabled: true
+  targetUrl: ""
+  replicas: 1
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { memory: 256Mi }
+  # Secret with keys HELPDESK_DATABASE_URL and HELPDESK_SCOPE_TOKENS ({scope: sha256(credential)}).
+  existingSecret: agentguard-helpdesk
+  seedSyntheticData: false
+
+anomalyModel:
+  # Retrain the advisory anomaly model from recorded traces on a schedule.
+  training:
+    enabled: true
+    schedule: "17 3 * * *"
+    minWindows: 200
+  storage:
+    size: 1Gi
+    storageClassName: ""
+
+observability:
+  otlpEndpoint: ""
+
+networkPolicies:
+  enabled: true
+  # Namespace label where cluster DNS runs.
+  dnsNamespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: kube-system
+  # Where the gateway fetches the IdP's signing keys and OTLP traces go.
+  idpEgressCIDR: 0.0.0.0/0
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile: { type: RuntimeDefault }
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities: { drop: ["ALL"] }

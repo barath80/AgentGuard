@@ -1,0 +1,141 @@
+{{- $name := printf "%s-gateway" (include "agentguard.fullname" .) -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "agentguard.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+spec:
+  {{- if not .Values.gateway.autoscaling.enabled }}
+  replicas: {{ .Values.gateway.replicas }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "agentguard.selector" (dict "ctx" . "component" "gateway") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agentguard.labels" . | nindent 8 }}
+        app.kubernetes.io/component: gateway
+    spec:
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "agentguard.selector" (dict "ctx" . "component" "gateway") | nindent 14 }}
+      containers:
+        - name: gateway
+          image: {{ include "agentguard.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # Migrations run in the pre-upgrade Job, not here.
+          command: ["uvicorn", "agentguard.gateway.app:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]
+          ports:
+            - { name: http, containerPort: 8000 }
+          env:
+            {{- include "agentguard.commonEnv" . | nindent 12 }}
+            - name: BROKER_URL
+              value: http://{{ include "agentguard.fullname" . }}-broker:8100
+            # The gateway gets the broker's service token, never a target credential.
+            - name: BROKER_SERVICE_TOKEN
+              valueFrom: { secretKeyRef: { name: {{ .Values.broker.existingSecret }}, key: BROKER_SERVICE_TOKEN } }
+            - name: KILL_SWITCH
+              value: {{ .Values.controls.killSwitch | quote }}
+            - name: ALLOW_READS_WHEN_POLICY_UNAVAILABLE
+              value: {{ .Values.controls.allowReadsWhenPolicyUnavailable | quote }}
+            - name: BREAKER_THRESHOLD
+              value: {{ .Values.controls.breakerThreshold | quote }}
+            - name: BREAKER_WINDOW_SECONDS
+              value: {{ .Values.controls.breakerWindowSeconds | quote }}
+            - name: APPROVAL_DEFAULT_EXPIRY_SECONDS
+              value: {{ .Values.controls.approvalExpirySeconds | quote }}
+            - name: OIDC_ISSUER
+              value: {{ .Values.auth.oidc.issuer | quote }}
+            - name: OIDC_CLIENT_ID
+              value: {{ .Values.auth.oidc.clientId | quote }}
+            - name: OIDC_JWKS_URL
+              value: {{ .Values.auth.oidc.jwksUrl | quote }}
+            - name: OIDC_ALLOWED_ROLES
+              value: {{ .Values.auth.oidc.allowedRoles | quote }}
+            - name: CONSOLE_STATIC_TOKENS
+              value: {{ .Values.auth.staticTokens | quote }}
+            - name: ANOMALY_MODEL_PATH
+              value: /models/anomaly.joblib
+            {{- range $k, $v := .Values.gateway.extraEnv }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          {{- if .Values.auth.staticTokensSecret }}
+          envFrom:
+            - secretRef: { name: {{ .Values.auth.staticTokensSecret }}, optional: true }
+          {{- end }}
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+            failureThreshold: 6
+          resources: {{- toYaml .Values.gateway.resources | nindent 12 }}
+          securityContext: {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+            - { name: models, mountPath: /models, readOnly: true }
+      volumes:
+        {{- include "agentguard.tmpVolume" . | nindent 8 }}
+        - name: models
+          persistentVolumeClaim:
+            claimName: {{ include "agentguard.fullname" . }}-models
+            readOnly: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "agentguard.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+spec:
+  selector:
+    {{- include "agentguard.selector" (dict "ctx" . "component" "gateway") | nindent 4 }}
+  ports:
+    - { name: http, port: 8000, targetPort: http }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $name }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "agentguard.selector" (dict "ctx" . "component" "gateway") | nindent 6 }}
+{{- if .Values.gateway.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ $name }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ $name }}
+  minReplicas: {{ .Values.gateway.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.gateway.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.gateway.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}

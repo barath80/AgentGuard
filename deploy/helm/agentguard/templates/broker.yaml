@@ -1,0 +1,76 @@
+{{- $name := printf "%s-broker" (include "agentguard.fullname" .) -}}
+# The only workload given target credentials, and (per networkpolicies.yaml) the only one
+# allowed to reach the helpdesk. It re-verifies every execution against the database.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "agentguard.labels" . | nindent 4 }}
+    app.kubernetes.io/component: broker
+spec:
+  replicas: {{ .Values.broker.replicas }}
+  selector:
+    matchLabels:
+      {{- include "agentguard.selector" (dict "ctx" . "component" "broker") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agentguard.labels" . | nindent 8 }}
+        app.kubernetes.io/component: broker
+    spec:
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: broker
+          image: {{ include "agentguard.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["uvicorn", "agentguard.broker.server:app", "--host", "0.0.0.0", "--port", "8100"]
+          ports:
+            - { name: http, containerPort: 8100 }
+          env:
+            {{- include "agentguard.commonEnv" . | nindent 12 }}
+            - name: HELPDESK_URL
+              value: {{ include "agentguard.helpdeskUrl" . | quote }}
+          envFrom:
+            # BROKER_SERVICE_TOKEN and AGENTGUARD_CRED_* from the secrets manager.
+            - secretRef: { name: {{ .Values.broker.existingSecret }} }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+            failureThreshold: 6
+          resources: {{- toYaml .Values.broker.resources | nindent 12 }}
+          securityContext: {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        {{- include "agentguard.tmpVolume" . | nindent 8 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "agentguard.labels" . | nindent 4 }}
+    app.kubernetes.io/component: broker
+spec:
+  selector:
+    {{- include "agentguard.selector" (dict "ctx" . "component" "broker") | nindent 4 }}
+  ports:
+    - { name: http, port: 8100, targetPort: http }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $name }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "agentguard.selector" (dict "ctx" . "component" "broker") | nindent 6 }}

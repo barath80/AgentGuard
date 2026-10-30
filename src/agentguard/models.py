@@ -178,3 +178,21 @@ class EvaluationCase(Base):
     scenario: Mapped[dict] = mapped_column(JSON, default=dict)
     expected_decision: Mapped[str] = mapped_column(String, nullable=False)
     expected_outcome: Mapped[str] = mapped_column(String, nullable=False, default="")
+
+
+class OperatorAction(Base):
+    """Append-only record of state-changing console actions: who did what, to which object.
+
+    Agent-side events live in `audit_events`, keyed by execution; this covers the
+    human side (approval decisions, suspending an agent), which has no execution of its own.
+    """
+
+    __tablename__ = "operator_actions"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    actor: Mapped[str] = mapped_column(String, nullable=False)
+    action: Mapped[str] = mapped_column(String, nullable=False)
+    target_type: Mapped[str] = mapped_column(String, nullable=False)
+    target_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

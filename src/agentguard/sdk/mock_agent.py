@@ -11,7 +11,7 @@ from agentguard.policy.seed import MOCK_AGENT_WORKLOAD_REF, MOCK_APPROVER_ROLE
 from agentguard.sdk.client import AgentGuardClient
 
 
-def run(base_url: str = "http://localhost:8000") -> None:
+def run(base_url: str = "http://127.0.0.1:8000") -> None:
     client = AgentGuardClient(base_url, workload_identity=MOCK_AGENT_WORKLOAD_REF)
 
     read_result = client.call_tool(

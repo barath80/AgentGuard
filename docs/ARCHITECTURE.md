@@ -65,6 +65,7 @@ The agent never talks to a real tool directly. It calls the gateway; the gateway
 | Execution broker | In-process module (`src/agentguard/broker/`); a separate service is the intended deployment | One credential scope per executor, enforced by the target system; per-call timeout that returns immediately; target dedupes on the execution id; timed-out writes are reconciled against the target's idempotency record |
 | Audit | Postgres `audit_events`, append-only at the application layer (`src/agentguard/audit/`) | No update/delete code paths. A separate DB role without UPDATE/DELETE grants is **not yet configured** (see THREAT_MODEL #8). External immutable storage is a later option, not assumed to make tampering impossible |
 | Replay / simulation | Read-only (`src/agentguard/replay/`) | Never imports the broker; dry-run executors; DB-enforced read-only connection |
+| Operator console | Console API (`src/agentguard/console/`) + web app (`web/`, React/TypeScript, served by nginx) | Humans sign in separately from agents; an approver's identity comes from that sign-in. Reads are tenant-scoped; simulation, replay and anomaly detection run on a read-only DB session. nginx exposes only `/v1/console/*`, so the console's front door can't be used to submit tool calls |
 | Event processing | None yet | Redis is provisioned but unused — the runtime controls didn't need a queue. Kafka only if a concrete throughput/retention requirement shows up |
 | Observability | OpenTelemetry spans (tool call → policy → broker), Jaeger via Compose profile, operator `/v1/stats`, anomaly report CLI | Span attributes never include payloads. No metrics exporter or cost tracking yet |
 | Deployment | Docker Compose locally (Postgres + Redis + app); CI runs the adversarial/regression suite on every change to prompts, policies, models, or tools | No real production credentials anywhere in this repo |
@@ -76,3 +77,30 @@ An agent's prompt or tool-call arguments can be manipulated by injected content 
 ## Confused-deputy guard
 
 The execution broker holds more privilege than any individual agent. It must never use that privilege except on behalf of a specific, already-authorized decision (one policy evaluation → one broker call, carrying the decision's ID). The broker does not independently decide to act; it only executes what the policy engine already approved, and it reconciles/logs under that same decision ID.
+
+## Operator console
+
+```
+ browser ──► nginx (web/: static build, CSP) ──/v1/console/*──► gateway ──► Postgres
+                                                                   ▲
+                agents ──/v1/tool-calls (never via nginx)──────────┘
+```
+
+The console is a separate front door for people: it never exposes agent endpoints, and agents never use it. Sign-in maps a bearer token to a configured principal (`CONSOLE_PRINCIPALS`: name, roles, tenants, token hash) — a stand-in for OIDC that keeps the same boundary: whatever the browser sends, the approver is whoever the token says. State changes go through the same services the gateway and CLI use (`approval.service.decide`, `controls.service.set_agent_status`), so the console adds no second enforcement path, and each one is recorded in `operator_actions`.
+
+## Deployed topology
+
+```
+ agents ──/v1/tool-calls──► gateway ──(service token)──► broker ──(scoped creds, verified tenant)──► helpdesk
+                              │  ▲                          │                                          │
+ people ──► console (nginx) ──┘  │                          └──── re-reads the execution ──┐          own DB
+            │                    └── Keycloak (OIDC, JWKS)                                  ▼
+            └──── sign-in ──► Keycloak                                         AgentGuard Postgres
+```
+
+- **Gateway** decides; it holds the database URL and the broker's service token, never a target credential.
+- **Broker** acts; it holds the target credentials and re-checks each execution against the recorded decision before using them.
+- **Helpdesk** is the system of record for tickets and refunds. It enforces scopes, the tenant boundary on real records, idempotency and the refund cap itself, as a real third-party API would.
+- **Anomaly model** trains nightly from traces over a read-only connection and is read by the console only. Nothing on the enforcement path consults it.
+
+Compose (`docker-compose.yml`) and the Helm chart (`deploy/helm/agentguard`) run this same topology; in Kubernetes, network policies make the arrows above the only allowed paths.

@@ -67,13 +67,13 @@ def test_agent_sdk_does_not_load_the_broker():
 def held_refunds(monkeypatch):
     """Refund executor that blocks until released, then really applies the refund."""
     release = threading.Event()
-    real = EXECUTORS["mock.issue_refund"]
+    real = EXECUTORS["billing.refund"]
 
-    def blocking_run(args, credential, key):
+    def blocking_run(args, credential, key, tenant):
         release.wait(timeout=10)
-        return real.run(args, credential, key)
+        return real.run(args, credential, key, tenant)
 
-    monkeypatch.setitem(EXECUTORS, "mock.issue_refund", Executor(blocking_run, real.scope, real.writes))
+    monkeypatch.setitem(EXECUTORS, "billing.refund", Executor(blocking_run, real.scope, real.writes, real.lookup))
     monkeypatch.setattr(settings, "broker_timeout_seconds", 0.2)
     yield release
     release.set()
@@ -91,7 +91,8 @@ def test_broker_timeout_returns_without_waiting_for_the_hung_call(held_refunds):
     started = time.monotonic()
     with pytest.raises(broker_service.BrokerTimeoutError):
         broker_service.execute(
-            "mock.issue_refund", {"ticket_id": "T-1001", "amount": 1}, idempotency_key="hung", timeout_seconds=0.2
+            "billing.refund", {"ticket_id": "T-1001", "amount": 1}, idempotency_key="hung",
+            tenant_id="tenant-a", timeout_seconds=0.2,
         )
     assert time.monotonic() - started < 1.5
 
@@ -117,7 +118,7 @@ def test_timeout_is_never_treated_as_no_side_effect(session: Session, held_refun
 
 def test_timed_out_read_is_a_failure_without_side_effects(session: Session, monkeypatch):
     monkeypatch.setitem(
-        EXECUTORS, "mock.read_ticket", Executor(lambda *_: time.sleep(1) or {}, "tickets:read", writes=False)
+        EXECUTORS, "tickets.read", Executor(lambda *_: time.sleep(1) or {}, "tickets:read", writes=False)
     )
     monkeypatch.setattr(settings, "broker_timeout_seconds", 0.1)
 

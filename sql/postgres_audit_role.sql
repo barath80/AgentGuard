@@ -15,6 +15,8 @@
 -- claim, consistent with docs/THREAT_MODEL.md's non-claims section.
 
 REVOKE UPDATE, DELETE, TRUNCATE ON audit_events FROM agentguard;
+-- Same for the console's record of human actions (approval decisions, suspensions).
+REVOKE UPDATE, DELETE, TRUNCATE ON operator_actions FROM agentguard;
 
 -- Confirm it stuck: this should show only 'SELECT' and 'INSERT'.
 -- SELECT privilege_type FROM information_schema.table_privileges

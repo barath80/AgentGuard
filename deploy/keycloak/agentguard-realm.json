@@ -1,0 +1,136 @@
+{
+  "realm": "agentguard",
+  "enabled": true,
+  "displayName": "AgentGuard",
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "bruteForceProtected": true,
+  "accessTokenLifespan": 900,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 36000,
+  "roles": {
+    "realm": [
+      { "name": "operator", "description": "Read all tenants; suspend and resume agents" },
+      { "name": "support-lead", "description": "Approve gated refunds for the tenants in the user's tenants attribute" },
+      { "name": "viewer", "description": "Read-only; never sees request payloads" }
+    ]
+  },
+  "components": {
+    "org.keycloak.userprofile.UserProfileProvider": [
+      {
+        "providerId": "declarative-user-profile",
+        "subComponents": {},
+        "config": {
+          "kc.user.profile.config": [
+            "{\"attributes\":[{\"name\":\"username\",\"displayName\":\"${username}\",\"validations\":{\"length\":{\"min\":3,\"max\":255}},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\"]}},{\"name\":\"email\",\"displayName\":\"${email}\",\"validations\":{\"email\":{}},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\"]}},{\"name\":\"firstName\",\"displayName\":\"${firstName}\",\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\"]}},{\"name\":\"lastName\",\"displayName\":\"${lastName}\",\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\"]}},{\"name\":\"tenants\",\"displayName\":\"Tenants\",\"multivalued\":true,\"permissions\":{\"view\":[\"admin\"],\"edit\":[\"admin\"]}}],\"groups\":[]}"
+          ]
+        }
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "agentguard-console",
+      "name": "AgentGuard Console",
+      "enabled": true,
+      "publicClient": true,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": ["http://localhost:8080/*", "http://localhost:5173/*"],
+      "webOrigins": ["http://localhost:8080", "http://localhost:5173"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:8080/*##http://localhost:5173/*"
+      },
+      "protocolMappers": [
+        {
+          "name": "audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "agentguard-console",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        },
+        {
+          "name": "roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "config": {
+            "claim.name": "roles",
+            "multivalued": "true",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false"
+          }
+        },
+        {
+          "name": "tenants",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "config": {
+            "user.attribute": "tenants",
+            "claim.name": "tenants",
+            "multivalued": "true",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "olivia",
+      "enabled": true,
+      "email": "olivia@example.test",
+      "emailVerified": true,
+      "firstName": "Olivia",
+      "lastName": "Operator",
+      "attributes": { "tenants": ["*"] },
+      "realmRoles": ["operator"],
+      "credentials": [{ "type": "password", "value": "dev-only-password", "temporary": false }]
+    },
+    {
+      "username": "dana",
+      "enabled": true,
+      "email": "dana@example.test",
+      "emailVerified": true,
+      "firstName": "Dana",
+      "lastName": "Lead",
+      "attributes": { "tenants": ["tenant-a"] },
+      "realmRoles": ["support-lead"],
+      "credentials": [{ "type": "password", "value": "dev-only-password", "temporary": false }]
+    },
+    {
+      "username": "lee",
+      "enabled": true,
+      "email": "lee@example.test",
+      "emailVerified": true,
+      "firstName": "Lee",
+      "lastName": "Lead",
+      "attributes": { "tenants": ["tenant-b"] },
+      "realmRoles": ["support-lead"],
+      "credentials": [{ "type": "password", "value": "dev-only-password", "temporary": false }]
+    },
+    {
+      "username": "sam",
+      "enabled": true,
+      "email": "sam@example.test",
+      "emailVerified": true,
+      "firstName": "Sam",
+      "lastName": "Viewer",
+      "attributes": { "tenants": ["*"] },
+      "realmRoles": ["viewer"],
+      "credentials": [{ "type": "password", "value": "dev-only-password", "temporary": false }]
+    }
+  ]
+}

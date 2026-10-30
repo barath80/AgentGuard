@@ -1,6 +1,6 @@
 from collections.abc import Iterator
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from agentguard.config import settings
@@ -22,8 +22,8 @@ def get_session() -> Iterator[Session]:
         session.close()
 
 
-def read_only_session(database_url: str) -> Session:
-    """A session whose connections the database itself refuses to write through."""
+def read_only_engine(database_url: str) -> Engine:
+    """An engine whose connections the database itself refuses to write through."""
     engine = create_engine(database_url)
 
     @event.listens_for(engine, "connect")
@@ -35,7 +35,11 @@ def read_only_session(database_url: str) -> Session:
             cursor.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")
         cursor.close()
 
-    return sessionmaker(bind=engine)()
+    return engine
+
+
+def read_only_session(database_url: str) -> Session:
+    return sessionmaker(bind=read_only_engine(database_url))()
 
 
 def close_session(session: Session) -> None:

@@ -4,11 +4,13 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import RedirectResponse
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from agentguard.approval import service as approval_service
 from agentguard.audit.stats import compute_stats
 from agentguard.config import settings
+from agentguard.console.routes import router as console_router
 from agentguard.db import Base, SessionLocal, engine, get_session
 from agentguard.gateway import service as gateway_service
 from agentguard.gateway.schemas import (
@@ -40,6 +42,7 @@ async def _lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="AgentGuard Gateway", lifespan=_lifespan)
+app.include_router(console_router)
 
 
 @app.get("/", include_in_schema=False)
@@ -47,6 +50,22 @@ def root() -> RedirectResponse:
     """The bare root 404s by default in FastAPI, which looks like the server is
     broken when it's actually fine — send people to the docs instead."""
     return RedirectResponse(url="/docs")
+
+
+@app.get("/healthz", include_in_schema=False)
+def healthz() -> dict[str, str]:
+    """Liveness: the process is up. Deliberately does not touch the database."""
+    return {"status": "ok"}
+
+
+@app.get("/readyz", include_in_schema=False)
+def readyz(session: Session = Depends(get_session)) -> dict[str, str]:
+    """Readiness: only take traffic when the database (and so policy) is reachable."""
+    try:
+        session.execute(text("SELECT 1"))
+    except Exception as exc:  # any failure means not ready
+        raise HTTPException(status_code=503, detail="database unavailable") from exc
+    return {"status": "ready"}
 
 
 def require_identity(

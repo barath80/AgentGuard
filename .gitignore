@@ -8,4 +8,7 @@ venv/
 .env
 *.db
 evaluation-report.json
+live-agent-report.json
+# Trained model artifacts are build outputs, retrained from traces, never committed.
+models/
 .DS_Store

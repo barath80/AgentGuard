@@ -1,0 +1,73 @@
+{{- if .Values.helpdesk.enabled }}
+{{- $name := printf "%s-helpdesk" (include "agentguard.fullname" .) -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "agentguard.labels" . | nindent 4 }}
+    app.kubernetes.io/component: helpdesk
+spec:
+  replicas: {{ .Values.helpdesk.replicas }}
+  selector:
+    matchLabels:
+      {{- include "agentguard.selector" (dict "ctx" . "component" "helpdesk") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agentguard.labels" . | nindent 8 }}
+        app.kubernetes.io/component: helpdesk
+    spec:
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- if .Values.helpdesk.seedSyntheticData }}
+      initContainers:
+        - name: seed
+          image: {{ include "agentguard.image" . }}
+          command: ["python", "-m", "helpdesk.seed"]
+          envFrom:
+            - secretRef: { name: {{ .Values.helpdesk.existingSecret }} }
+          securityContext: {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      {{- end }}
+      containers:
+        - name: helpdesk
+          image: {{ include "agentguard.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["uvicorn", "helpdesk.app:app", "--host", "0.0.0.0", "--port", "8200"]
+          ports:
+            - { name: http, containerPort: 8200 }
+          envFrom:
+            # HELPDESK_DATABASE_URL and HELPDESK_SCOPE_TOKENS.
+            - secretRef: { name: {{ .Values.helpdesk.existingSecret }} }
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+            failureThreshold: 6
+          resources: {{- toYaml .Values.helpdesk.resources | nindent 12 }}
+          securityContext: {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        {{- include "agentguard.tmpVolume" . | nindent 8 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "agentguard.labels" . | nindent 4 }}
+    app.kubernetes.io/component: helpdesk
+spec:
+  selector:
+    {{- include "agentguard.selector" (dict "ctx" . "component" "helpdesk") | nindent 4 }}
+  ports:
+    - { name: http, port: 8200, targetPort: http }
+{{- end }}

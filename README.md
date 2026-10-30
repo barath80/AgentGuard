@@ -1,4 +1,24 @@
 # AgentGuard
 AI agents may read records, create tickets, call APIs or alter infrastructure. Teams need to know which authenticated agent requested an action, what policy applied, whether approval was required, and what actually happened. AgentGuard sits at the tool-execution boundary; it does not rely on the model's own promise to behave.
 
+## What's in the box
+
+- **Gateway** — intake, schema validation, identity from verified context, runtime controls, versioned policy, bound single-use approvals, a least-privilege execution broker, append-only audit.
+- **Replay & simulation** — re-derive past decisions under the policy version that made them; test a proposed policy against recorded traffic and see security loosening and task-success regressions separately, before release.
+- **Real target and broker** — a separate ticketing/billing service with its own database; a broker service that alone holds its credentials and re-verifies every execution; Kubernetes network policies so nothing else can reach it.
+- **Claude support agent** — a real LLM agent working real tickets (some carrying prompt injections) through the gateway, with a live red-team evaluation.
+- **Behavioural risk model** — an advisory anomaly model trained on execution traces that explains which behaviours look unusual.
+- **Operator console** (`web/`) — live overview, activity log with each call's full decision path, approvals queue, agents and tools, policy simulation lab, anomaly findings and an operator action log.
+
+## Quick start
+
+```
+docker compose up -d --build                      # Postgres, Redis, gateway (:8000), console (:8080)
+python -m agentguard.sdk.demo_traffic --rounds 3  # synthetic traffic through the gateway
+```
+
+Open http://localhost:8080 and choose **Continue with single sign-on**. Keycloak runs a synthetic dev realm: `olivia` (operator), `dana` (support lead for tenant-a, can approve refunds) or `sam` (read-only viewer), password `dev-only-password`. Dev tokens (`dev-only-operator-token`, `dev-only-console-dana`, `dev-only-console-sam`) also work.
+
+Kubernetes: see [deploy/helm/README.md](deploy/helm/README.md).
+
 See [SETUP.md](SETUP.md) to run it locally, [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design, and [docs/ROADMAP.md](docs/ROADMAP.md) for build status.

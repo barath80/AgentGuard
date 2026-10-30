@@ -136,11 +136,16 @@ def simulate(session: Session, proposed_rules: list[RuleSpec], proposed_version:
 
 
 def load_policy_file(path: Path) -> tuple[int, list[RuleSpec]]:
-    """Load a proposed policy: {"version": int, "rules": [{match, decision, priority, approval_role?}]}."""
-    data = json.loads(path.read_text())
+    return parse_policy(json.loads(path.read_text()))
+
+
+def parse_policy(data: dict[str, Any]) -> tuple[int, list[RuleSpec]]:
+    """Parse a proposed policy: {"version": int, "rules": [{match, decision, priority, approval_role?}]}."""
     version = int(data["version"])
     rules = []
     for i, raw in enumerate(data["rules"]):
+        if not isinstance(raw.get("match", {}), dict):
+            raise TypeError(f"rule {i}: match must be an object")
         if raw["decision"] not in DECISIONS:
             raise ValueError(f"rule {i}: invalid decision {raw['decision']!r}")
         rules.append(

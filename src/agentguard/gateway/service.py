@@ -276,7 +276,8 @@ def _execute_and_record(
             # agent keys are only unique per agent, so two agents' keys could collide downstream.
             result = broker_service.execute(
                 tool.executor_ref, args,
-                idempotency_key=execution.id, timeout_seconds=settings.broker_timeout_seconds,
+                idempotency_key=execution.id, tenant_id=execution.tenant_id,
+                timeout_seconds=settings.broker_timeout_seconds,
             )
     except broker_service.BrokerTimeoutError:
         audit_service.record(session, execution.id, "execution_timeout", {})

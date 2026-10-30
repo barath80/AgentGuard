@@ -1,0 +1,98 @@
+{{- if .Values.console.enabled }}
+{{- $name := printf "%s-console" (include "agentguard.fullname" .) -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "agentguard.labels" . | nindent 4 }}
+    app.kubernetes.io/component: console
+spec:
+  replicas: {{ .Values.console.replicas }}
+  selector:
+    matchLabels:
+      {{- include "agentguard.selector" (dict "ctx" . "component" "console") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agentguard.labels" . | nindent 8 }}
+        app.kubernetes.io/component: console
+    spec:
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: console
+          image: {{ .Values.consoleImage.repository }}:{{ .Values.consoleImage.tag }}
+          imagePullPolicy: {{ .Values.consoleImage.pullPolicy }}
+          ports:
+            - { name: http, containerPort: 8080 }
+          env:
+            - name: GATEWAY_UPSTREAM
+              value: http://{{ include "agentguard.fullname" . }}-gateway:8000
+            - name: OIDC_ORIGIN
+              value: {{ .Values.auth.oidc.browserOrigin | quote }}
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+          resources: {{- toYaml .Values.console.resources | nindent 12 }}
+          securityContext: {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          volumeMounts:
+            # nginx renders its config and keeps temp files here; the root filesystem stays read-only.
+            - { name: nginx-conf, mountPath: /etc/nginx/conf.d }
+            - { name: nginx-tmp, mountPath: /tmp }
+      volumes:
+        - name: nginx-conf
+          emptyDir: { sizeLimit: 1Mi }
+        - name: nginx-tmp
+          emptyDir: { sizeLimit: 64Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "agentguard.labels" . | nindent 4 }}
+    app.kubernetes.io/component: console
+spec:
+  selector:
+    {{- include "agentguard.selector" (dict "ctx" . "component" "console") | nindent 4 }}
+  ports:
+    - { name: http, port: 8080, targetPort: http }
+{{- if .Values.console.ingress.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "agentguard.labels" . | nindent 4 }}
+  annotations:
+    # Long-lived Server-Sent Events stream for live updates.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    {{- with .Values.console.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  ingressClassName: {{ .Values.console.ingress.className }}
+  tls:
+    - hosts: [{{ .Values.console.ingress.host | quote }}]
+      secretName: {{ .Values.console.ingress.tls.secretName }}
+  rules:
+    - host: {{ .Values.console.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $name }}
+                port: { name: http }
+{{- end }}
+{{- end }}

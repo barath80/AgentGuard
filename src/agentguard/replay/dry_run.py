@@ -30,7 +30,7 @@ def _would_write(tool: str) -> DryRunFn:
 
 
 DRY_RUN_EXECUTORS: dict[str, DryRunFn] = {
-    "mock.read_ticket": _read_ticket,
-    "mock.create_ticket": _would_write("create-ticket"),
-    "mock.issue_refund": _would_write("issue-refund"),
+    "tickets.read": _read_ticket,
+    "tickets.create": _would_write("create-ticket"),
+    "billing.refund": _would_write("issue-refund"),
 }

@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from agentguard.models import Approval, Execution
 
 
-def _percentile(values: list[float], pct: int) -> float | None:
+def percentile(values: list[float], pct: int) -> float | None:
     if not values:
         return None
     if len(values) == 1:
@@ -36,7 +36,7 @@ def compute_stats(session: Session) -> dict[str, Any]:
         "unresolved_timeouts": sum(1 for e in executions if e.outcome == "timeout"),
         "pending_approvals": session.query(Approval).filter(Approval.status == "pending").count(),
         "decision_latency_ms": {
-            "p50": _percentile(latencies_ms, 50),
-            "p95": _percentile(latencies_ms, 95),
+            "p50": percentile(latencies_ms, 50),
+            "p95": percentile(latencies_ms, 95),
         },
     }

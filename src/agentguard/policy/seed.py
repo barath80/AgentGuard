@@ -41,21 +41,21 @@ def seed(session: Session) -> None:
         name="read-ticket",
         risk_class="read",
         target_scope="tickets",
-        executor_ref="mock.read_ticket",
+        executor_ref="tickets.read",
         input_schema={"type": "object", "properties": {"ticket_id": {"type": "string"}}},
     )
     create_ticket = Tool(
         name="create-ticket",
         risk_class="write-low",
         target_scope="tickets",
-        executor_ref="mock.create_ticket",
-        input_schema={"type": "object", "properties": {"subject": {"type": "string"}}},
+        executor_ref="tickets.create",
+        input_schema={"type": "object", "properties": {"subject": {"type": "string"}, "body": {"type": "string"}}},
     )
     issue_refund = Tool(
         name="issue-refund",
         risk_class="write-high",
         target_scope="billing",
-        executor_ref="mock.issue_refund",
+        executor_ref="billing.refund",
         spend_arg="amount",
         input_schema={
             "type": "object",

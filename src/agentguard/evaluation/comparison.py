@@ -69,8 +69,8 @@ def _percentiles(samples_ms: list[float]) -> dict[str, float]:
 def measure_latency(session: Session, identity, iterations: int = 30) -> list[LatencyResult]:
     results = []
     scenarios = [
-        ("read-ticket", "mock.read_ticket", {"ticket_id": "T-1001"}),
-        ("issue-refund", "mock.issue_refund", {"ticket_id": "T-1001", "amount": 1}),
+        ("read-ticket", "tickets.read", {"ticket_id": "T-1001"}),
+        ("issue-refund", "billing.refund", {"ticket_id": "T-1001", "amount": 1}),
     ]
     for tool_name, executor_ref, args in scenarios:
         direct_samples, gateway_samples = [], []
@@ -104,7 +104,7 @@ def run_security_scenarios(session: Session) -> list[SecurityScenario]:
     scenarios = []
 
     # 1. Tenant isolation: the target system has no concept of tenant at all.
-    direct_result = direct_call("mock.read_ticket", {"ticket_id": "T-1001"}, "sec-1-direct")
+    direct_result = direct_call("tickets.read", {"ticket_id": "T-1001"}, "sec-1-direct")
     agent = resolve_identity(session, MOCK_AGENT_WORKLOAD_REF)  # belongs to tenant-a
     gw = gateway_service.submit_tool_call(
         session, gateway_call("read-ticket", {"ticket_id": "T-1001"}, "sec-1-gw", resource_tenant_id="tenant-b"), agent
@@ -118,7 +118,7 @@ def run_security_scenarios(session: Session) -> list[SecurityScenario]:
     ))
 
     # 2. Production write-high access without any environment gate at the target.
-    direct_result = direct_call("mock.issue_refund", {"ticket_id": "T-1001", "amount": 50}, "sec-2-direct")
+    direct_result = direct_call("billing.refund", {"ticket_id": "T-1001", "amount": 50}, "sec-2-direct")
     other_agent = register_and_resolve(session, approved_environments=["prod"])
     gw = gateway_service.submit_tool_call(
         session, gateway_call("issue-refund", {"ticket_id": "T-1001", "amount": 50}, "sec-2-gw", environment="prod"),
@@ -133,7 +133,7 @@ def run_security_scenarios(session: Session) -> list[SecurityScenario]:
 
     # 3. Large refund executed immediately, with no approval step, at the target.
     direct_result = direct_call(
-        "mock.issue_refund", {"ticket_id": "T-1001", "amount": REFUND_THRESHOLD + 5000}, "sec-3-direct"
+        "billing.refund", {"ticket_id": "T-1001", "amount": REFUND_THRESHOLD + 5000}, "sec-3-direct"
     )
     gw = gateway_service.submit_tool_call(
         session,
@@ -151,7 +151,7 @@ def run_security_scenarios(session: Session) -> list[SecurityScenario]:
     spam_agent = register_and_resolve(session, rate_limit_per_minute=5)
     direct_allowed = sum(
         1 for i in range(10)
-        if direct_call("mock.read_ticket", {"ticket_id": "T-1001"}, f"sec-4-direct-{i}")
+        if direct_call("tickets.read", {"ticket_id": "T-1001"}, f"sec-4-direct-{i}")
     )
     gateway_allowed = sum(
         1 for i in range(10)
@@ -168,7 +168,7 @@ def run_security_scenarios(session: Session) -> list[SecurityScenario]:
 
     # 5. Unexpected argument on a high-risk tool: the target executor doesn't validate it either.
     direct_result = direct_call(
-        "mock.issue_refund", {"ticket_id": "T-1001", "amount": 5, "admin_override": True}, "sec-5-direct"
+        "billing.refund", {"ticket_id": "T-1001", "amount": 5, "admin_override": True}, "sec-5-direct"
     )
     gw = gateway_service.submit_tool_call(
         session,

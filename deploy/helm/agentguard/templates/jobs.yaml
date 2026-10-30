@@ -1,0 +1,100 @@
+{{- $fullname := include "agentguard.fullname" . -}}
+# Schema migrations run once per install/upgrade, before new gateway pods start.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $fullname }}-migrate-{{ .Release.Revision }}
+  labels:
+    {{- include "agentguard.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrate
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels:
+        {{- include "agentguard.labels" . | nindent 8 }}
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: migrate
+          image: {{ include "agentguard.image" . }}
+          command: ["alembic", "upgrade", "head"]
+          env:
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: {{ .Values.database.existingSecret }}, key: DATABASE_URL } }
+          securityContext: {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        {{- include "agentguard.tmpVolume" . | nindent 8 }}
+---
+# Trained anomaly model artifacts: written by the training CronJob, read by the gateway.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $fullname }}-models
+  labels:
+    {{- include "agentguard.labels" . | nindent 4 }}
+spec:
+  accessModes: [ReadWriteMany]
+  {{- with .Values.anomalyModel.storage.storageClassName }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.anomalyModel.storage.size }}
+{{- if .Values.anomalyModel.training.enabled }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ $fullname }}-train-anomaly
+  labels:
+    {{- include "agentguard.labels" . | nindent 4 }}
+    app.kubernetes.io/component: train
+spec:
+  schedule: {{ .Values.anomalyModel.training.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            {{- include "agentguard.labels" . | nindent 12 }}
+            app.kubernetes.io/component: train
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext: {{- toYaml .Values.podSecurityContext | nindent 12 }}
+          containers:
+            - name: train
+              image: {{ include "agentguard.image" . }}
+              # Reads traces over a database-enforced read-only connection; refuses with too little history.
+              command: ["python", "-m", "agentguard.ml.model", "--model-path", "/models/anomaly.joblib",
+                        "train", "--min-windows", "{{ .Values.anomalyModel.training.minWindows }}"]
+              env:
+                - name: DATABASE_URL
+                  valueFrom: { secretKeyRef: { name: {{ .Values.database.existingSecret }}, key: DATABASE_URL } }
+              securityContext: {{- toYaml .Values.containerSecurityContext | nindent 16 }}
+              volumeMounts:
+                - { name: models, mountPath: /models }
+                - { name: tmp, mountPath: /tmp }
+          volumes:
+            - name: models
+              persistentVolumeClaim: { claimName: {{ $fullname }}-models }
+            {{- include "agentguard.tmpVolume" . | nindent 12 }}
+{{- end }}

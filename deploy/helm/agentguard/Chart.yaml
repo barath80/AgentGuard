@@ -1,0 +1,7 @@
+apiVersion: v2
+name: agentguard
+description: Runtime authorization, audit and replay gateway for AI agent tool calls.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords: [ai-agents, authorization, audit, policy]

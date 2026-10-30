@@ -25,9 +25,9 @@ class Unauthorized(Exception):
 def expected_credential(scope: str) -> str:
     """What this external system accepts for a scope.
 
-    Synthetic by default; set AGENTGUARD_MOCK_CRED_<SCOPE> to override.
+    Synthetic by default; set AGENTGUARD_CRED_<SCOPE> to override (same as the broker).
     """
-    env = "AGENTGUARD_MOCK_CRED_" + scope.replace(":", "_").upper()
+    env = "AGENTGUARD_CRED_" + scope.replace(":", "_").upper()
     return os.environ.get(env, f"dev-only-{scope}")
 
 
