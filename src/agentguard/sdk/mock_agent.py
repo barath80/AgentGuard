@@ -56,8 +56,8 @@ def run(base_url: str = "http://127.0.0.1:8000") -> None:
 
     if large_refund["decision"] == "approval_required":
         print(f"-- awaiting approval from role={MOCK_APPROVER_ROLE} --")
-        # In a real deployment, a human approver hits the /v1/approvals endpoint.
-        # Demonstrated separately in tests/test_gateway_flow.py.
+        # A human approves it in the operator console (/v1/console/approvals), signed in
+        # as a support lead for the tenant; the agent then calls execute_approved.
 
 
 if __name__ == "__main__":

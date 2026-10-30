@@ -18,6 +18,11 @@ class ToolCallRequest(BaseModel):
     target_resource: str
     args: dict[str, Any] = Field(default_factory=dict)
     idempotency_key: str
+    workflow_id: str | None = Field(
+        default=None, max_length=100, pattern=r"^[A-Za-z0-9._:-]+$",
+        description="Optional label grouping this call with the agent's other steps of one task. "
+        "Grouping only: it grants nothing, and it's scoped to the calling agent.",
+    )
 
 
 class ToolCallResponse(BaseModel):
@@ -28,15 +33,6 @@ class ToolCallResponse(BaseModel):
     approval_id: str | None = None
     result: dict[str, Any] | None = None
     reason: str | None = None
-
-
-class ApprovalDecisionRequest(BaseModel):
-    approve: bool
-
-
-class ApprovalDecisionResponse(BaseModel):
-    approval_id: str
-    status: str
 
 
 class ExecuteApprovedRequest(BaseModel):

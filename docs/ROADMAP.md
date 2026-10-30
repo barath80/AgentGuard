@@ -34,7 +34,7 @@ Deferred to later phases on purpose: agent/tool CRUD endpoints (only one seeded 
 
 - [x] Routine test cases (see `docs/EVALUATION.md`) — `src/agentguard/evaluation/cases.py`
 - [x] Adversarial test cases (prompt injection, spoofed identity, duplicate call, replayed approval, prohibited prod access, wrong-tenant/wrong-role approver, policy change during pending approval)
-- [ ] Gateway bypass case — needs a real deployment boundary (network/credential inventory) to test meaningfully; deferred to Phase 4 alongside credential inventory
+- [x] Gateway bypass case — moved to Phase 4, done there
 - [x] Metrics collection: false-allow/false-deny rate, audit completeness, duplicate side-effect rate, per-case p95 latency — `python -m agentguard.evaluation.runner`
 - [x] CI wiring (`.github/workflows/ci.yml`): lint + pytest + evaluation gate on every push/PR; fails if false-allow > 0 or any routine case regresses; uploads the JSON report as an artifact
 
@@ -43,7 +43,7 @@ Deferred to later phases on purpose: agent/tool CRUD endpoints (only one seeded 
 - [x] Deterministic replay against mocks/read-only systems — re-derives each recorded decision under the policy version it was made with (not the active one) and runs tool steps through dry-run adapters (`src/agentguard/replay/`)
 - [x] Counterfactual policy simulation (proposed policy vs. recorded traces, no execution) — `python -m agentguard.replay.cli simulate --policy <file>`; `--fail-on-loosening` makes it usable as a pre-release gate
 - [x] Task-success measurement alongside safety metrics — simulation reports newly-allowed (security loosening) and newly-restricted (task-success risk) calls separately, plus unattended completion rate before → after
-- [ ] Snapshot agent risk category into the trace — replay currently reads it from the live registry, so changing an agent's category can make an old decision fail to reproduce
+- [x] Snapshot agent risk category (and tool risk class) into the trace, so re-categorising an agent or tool doesn't stop old decisions reproducing; pre-snapshot rows fall back to the registry
 
 ## Phase 4 — Resilience & observability
 
@@ -61,25 +61,25 @@ Deferred to later phases on purpose: agent/tool CRUD endpoints (only one seeded 
 
 - [x] Direct-access vs. gateway-enforced comparison (latency + security delta) — `python -m agentguard.evaluation.comparison_cli`, written up in [docs/EXPERIMENT.md](EXPERIMENT.md). Result: 5/5 security scenarios blocked, with an honestly-caveated latency cost (dominated by SQLite commit overhead in-process, not policy evaluation — Postgres comparison not yet run, needs Docker)
 - [x] Schema validation against `input_schema`: unexpected arguments rejected on `write-high`/`destructive` tools (THREAT_MODEL #13) — `src/agentguard/gateway/validation.py`
-- [x] Audit log hardening: `sql/postgres_audit_role.sql` revokes UPDATE/DELETE/TRUNCATE on `audit_events` from the app's DB role for production Postgres (THREAT_MODEL #8). Not applied to SQLite dev/test (no equivalent grant model)
-- [ ] Multi-step workflow grouping and partial-completion reporting (THREAT_MODEL #18) — deferred: none of the 3 mock tools have a real compensating action, so building this now would be speculative rather than tested against a real need
-- [ ] Final threat-model pass confirming every row has a test case — done for all rows except #17 (clock skew: only one clock is recorded, not cross-checked) and #18 above
+- [x] Audit log hardening (THREAT_MODEL #8): separate schema-owner and runtime roles; the runtime role gets SELECT/INSERT only on the append-only tables and DELETE nowhere (`agentguard.audit.grants`, run after each migration). Replaces the earlier REVOKE script, which didn't hold when the app connected as the table owner (it could re-grant itself). Not applicable to SQLite dev/test
+- [x] Multi-step workflow grouping and partial-completion reporting (THREAT_MODEL #18): agent-scoped `workflow_id`, console Workflows view listing partial tasks and the writes that took effect; the Claude agent and demo fleet label each ticket's handling as one workflow. Compensation stays a human decision (Phase 9)
+- [x] Final threat-model pass: every row has a test case, including #17 (broker clock cross-checked against the gateway's, Phase 9) and #18
 
 ## Phase 6 — Operator console
 
 - [x] Console API (`src/agentguard/console/`, mounted at `/v1/console`): overview metrics and decision time series, filterable activity log, per-call decision path with audit timeline, approvals queue, agent/tool registry views, policy versions, counterfactual simulation and replay, anomalies
 - [x] Human sign-in separate from agent identity: bearer token → configured principal (roles + tenants; only token hashes configured). Approver identity comes from the principal, never headers; `*` read access never grants approval authority (adversarial tests in `tests/adversarial/test_console_approvals.py`)
 - [x] Tenant-scoped reads (404 for other tenants' objects), request payloads hidden from `viewer` principals, simulation/replay on a database-enforced read-only session and limited to all-tenant readers
-- [x] Append-only `operator_actions` table for console actions (approval decisions, suspend/resume), covered by `sql/postgres_audit_role.sql`
+- [x] Append-only `operator_actions` table for console actions (approval decisions, suspend/resume), covered by the runtime-role grants
 - [x] `/healthz` (liveness) and `/readyz` (database reachable) probes; the container healthcheck gates the console in Compose
 - [x] Web console (`web/`): React + TypeScript + Vite, light/dark, responsive to phone width, live polling; nginx container with CSP and security headers that exposes only `/v1/console/*` (agent endpoints aren't reachable through it)
 - [x] Synthetic traffic generator (`python -m agentguard.sdk.demo_traffic`) and a CI job for console typecheck, unit tests and build
 - [x] OIDC sign-in for the console: JWTs verified against the IdP's keys (issuer, audience, expiry), roles filtered to an allowlist, tenants from a claim; Keycloak realm in `deploy/keycloak/`; PKCE public client in the web app. Static tokens remain for dev/break-glass (`CONSOLE_STATIC_TOKENS=false` disables them). Verified with signed test tokens; the Keycloak realm itself hasn't been run in this environment (needs Docker)
-- [ ] Retire or proxy-protect the header-based `/v1/approvals/{id}/decide` now that the console route exists
+- [x] Retired the header-based `/v1/approvals/{id}/decide`; approvals go through the console route only (adversarial test keeps it gone)
 - [x] Live updates over SSE (`/v1/console/stream`), read with fetch so the token never goes in a URL; tenant-scoped change events; polling drops to a one-minute fallback
-- [ ] Overview aggregates in SQL rather than Python — fine at demo volume, not at production volume
+- [x] Overview aggregates in SQL (GROUP BY counts, time buckets and completeness in the database; latency percentiles via `percentile_cont` on Postgres). CI now also runs the console, gateway, replay and adversarial suites against Postgres 16
 - [x] Kubernetes Helm chart (`deploy/helm/agentguard`) — see Phase 8
-- [ ] Registry CRUD (register agents/tools, publish a policy version from a simulated proposal) — console views are read-only today
+- [x] Registry actions in the console: operators register agents, and publish a policy version from the simulation lab. Publishing re-simulates server-side, refuses loosening unless acknowledged with a reason, picks the version number itself (unique in the database), and logs to `operator_actions`. Unknown rule match keys are now rejected (a typo used to widen a rule silently). Tool registration stays code-reviewed: a tool is only as safe as its executor
 
 ## Phase 7 — Real agent, real target, learned risk
 
@@ -99,6 +99,12 @@ Deferred to later phases on purpose: agent/tool CRUD endpoints (only one seeded 
 - [x] CI renders and schema-validates the chart and builds both images
 - [ ] Render the chart and run it on a real cluster (Helm wasn't available in this environment; CI covers lint and schema)
 - [ ] In-cluster mTLS (service mesh) between gateway, broker and target
+
+## Phase 9 — Closing the threat-model gaps
+
+- [x] Two clocks: the broker reports its own timing on every execution; skew beyond tolerance is an audit event and an anomaly finding (THREAT_MODEL #17)
+- [x] Workflow grouping and partial-completion reporting in the console (THREAT_MODEL #18)
+- [x] Runtime database role separated from the schema owner; audit tables append-only for the runtime role, verified on Postgres (THREAT_MODEL #8)
 
 ## Status
 

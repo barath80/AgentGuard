@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import clsx from "clsx";
-import { Bot, CirclePause, CirclePlay, Zap } from "lucide-react";
+import { Bot, CirclePause, CirclePlay, Plus, Zap } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
+import { RegisterAgent } from "../components/RegisterAgent";
 import { Badge, Button, Card, EmptyState, ErrorState, Mono, PageHeader, Skeleton } from "../components/ui";
 import { api, type Agent } from "../lib/api";
 import { formatNumber, timeAgo } from "../lib/format";
@@ -64,13 +65,23 @@ function SuspendButton({ agent }: { agent: Agent }) {
 export function Agents() {
   const me = useMe();
   const agents = useQuery({ queryKey: ["agents"], queryFn: api.agents, refetchInterval: 60_000 });
+  const [registering, setRegistering] = useState(false);
 
   return (
     <>
       <PageHeader
         title="Agents"
         description="Registered agent identities, the environments they may act in, and their runtime limits. Suspending an agent blocks its very next call."
+        actions={
+          me.can_operate &&
+          !registering && (
+            <Button variant="primary" icon={Plus} onClick={() => setRegistering(true)}>
+              Register agent
+            </Button>
+          )
+        }
       />
+      {registering && <RegisterAgent me={me} onDone={() => setRegistering(false)} />}
       {agents.error && <ErrorState error={agents.error} />}
       <Card padded={false}>
         {!agents.data ? (

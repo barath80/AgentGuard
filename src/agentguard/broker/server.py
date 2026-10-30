@@ -18,9 +18,10 @@ matching authorized decision in the audit trail (confused-deputy guard).
 import hashlib
 import hmac
 import json
+from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -84,11 +85,13 @@ def healthz() -> dict[str, str]:
 
 
 @app.post("/v1/execute", dependencies=[Depends(require_caller)])
-def execute(request: ExecuteRequest, session: Session = Depends(get_session)) -> dict[str, Any]:
+def execute(request: ExecuteRequest, response: Response, session: Session = Depends(get_session)) -> dict[str, Any]:
     _verify(session, request)
     session.close()  # don't hold a connection while the tool runs
+    # The broker's own clock, so the gateway can cross-check the trace's timing (THREAT_MODEL #17).
+    started = datetime.now(UTC)
     try:
-        return broker.run_locally(
+        result = broker.run_locally(
             request.executor_ref, request.args, idempotency_key=request.execution_id,
             tenant_id=request.tenant_id, timeout_seconds=settings.broker_timeout_seconds,
         )
@@ -96,6 +99,9 @@ def execute(request: ExecuteRequest, session: Session = Depends(get_session)) ->
         raise HTTPException(status_code=504, detail=str(exc)) from exc
     except broker.TargetRejected as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    response.headers[broker.CLOCK_STARTED_HEADER] = started.isoformat()
+    response.headers[broker.CLOCK_FINISHED_HEADER] = datetime.now(UTC).isoformat()
+    return result
 
 
 @app.post("/v1/reconcile", dependencies=[Depends(require_caller)])

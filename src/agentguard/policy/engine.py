@@ -16,6 +16,24 @@ from sqlalchemy.orm import Session
 from agentguard.models import Policy, PolicyRule
 
 DECISIONS = {"allow", "deny", "approval_required"}
+MATCH_KEYS = {"tool", "risk_class", "environment", "tenant", "agent_risk_category", "arg"}
+ARG_OPS = {"gt", "gte", "lt", "lte", "eq"}
+
+
+def validate_match(match: Any) -> None:
+    """Reject rules the engine would misread. An unknown key is otherwise ignored, so a
+    typo like "tool_name" silently widens a rule to match every call."""
+    if not isinstance(match, dict):
+        raise TypeError("match must be an object")
+    unknown = set(match) - MATCH_KEYS
+    if unknown:
+        raise ValueError(f"unknown match keys {sorted(unknown)}; allowed: {sorted(MATCH_KEYS)}")
+    arg = match.get("arg")
+    if arg is not None and (
+        not isinstance(arg, dict) or not isinstance(arg.get("field"), str) or arg.get("op") not in ARG_OPS
+        or "value" not in arg
+    ):
+        raise ValueError(f"arg condition needs field, op (one of {sorted(ARG_OPS)}) and value")
 
 
 @dataclass(frozen=True)

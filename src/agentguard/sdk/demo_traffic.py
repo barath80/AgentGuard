@@ -3,6 +3,10 @@ helpdesk's real ticket data, plus attacks the gateway should stop.
 
     python -m agentguard.sdk.demo_traffic                  # one round
     python -m agentguard.sdk.demo_traffic --rounds 5
+    python -m agentguard.sdk.demo_traffic --rounds 0 --interval 60 --attack-rate 0.05   # run as a fleet
+
+The last form keeps a fleet working until stopped, with an occasional attack,
+which is the kind of history the anomaly model (agentguard.ml) should learn from.
 
 Every call goes through the real gateway path (identity, controls, policy,
 broker, target), so what the console shows is what actually happened. The
@@ -16,7 +20,9 @@ they're missing (same as `controls.cli register`).
 """
 
 import argparse
+import itertools
 import random
+import time
 import uuid
 
 from agentguard.config import settings
@@ -26,6 +32,7 @@ from agentguard.policy.seed import MOCK_AGENT_WORKLOAD_REF, REFUND_THRESHOLD, re
 from agentguard.sdk.client import AgentGuardClient
 
 BILLING_AGENT = "billing-agent@dev-workload-pool"
+TRIAGE_AGENT = "triage-agent@dev-workload-pool"
 OPS_AGENT = "ops-agent@dev-workload-pool"
 # Plays an agent whose prompt has been hijacked; its circuit breaker opens, the rest of the fleet keeps working.
 INTAKE_AGENT = "intake-agent@dev-workload-pool"
@@ -39,6 +46,8 @@ def ensure_demo_agents() -> None:
         existing = {ref for (ref,) in session.query(Agent.workload_identity_ref).all()}
         if BILLING_AGENT not in existing:
             register_agent(session, BILLING_AGENT, owner="billing-eng", tenant_id="tenant-b", daily_spend_limit=2000)
+        if TRIAGE_AGENT not in existing:
+            register_agent(session, TRIAGE_AGENT, owner="support-eng", daily_spend_limit=500)
         if INTAKE_AGENT not in existing:
             register_agent(session, INTAKE_AGENT, owner="support-eng", daily_spend_limit=500)
         if OPS_AGENT not in existing:
@@ -49,7 +58,8 @@ def ensure_demo_agents() -> None:
             )
 
 
-def _call(client: AgentGuardClient, tool: str, args: dict, *, tenant="tenant-a", env="dev", target=None) -> dict:
+def _call(client: AgentGuardClient, tool: str, args: dict, *, tenant="tenant-a", env="dev", target=None,
+          workflow=None) -> dict:
     return client.call_tool(
         tool,
         environment=env,
@@ -57,13 +67,15 @@ def _call(client: AgentGuardClient, tool: str, args: dict, *, tenant="tenant-a",
         target_resource=target or f"ticket:{args.get('ticket_id', 'new')}",
         args=args,
         idempotency_key=str(uuid.uuid4()),
+        workflow_id=workflow,
     )
 
 
 def work_tickets(client: AgentGuardClient, tenant: str, candidates: list[str], rng: random.Random, record) -> None:
     """Read tickets; refund the refundable ones within what's left on the order."""
     for ticket_id in candidates:
-        read = _call(client, "read-ticket", {"ticket_id": ticket_id}, tenant=tenant)
+        workflow = f"{ticket_id}:{uuid.uuid4().hex[:12]}"
+        read = _call(client, "read-ticket", {"ticket_id": ticket_id}, tenant=tenant, workflow=workflow)
         record(f"read {ticket_id}", read)
         ticket = read.get("result") or {}
         if not ticket.get("found") or not any(s.lower() in ticket.get("subject", "").lower() for s in REFUND_SUBJECTS):
@@ -74,13 +86,14 @@ def work_tickets(client: AgentGuardClient, tenant: str, candidates: list[str], r
         # Full refunds above the threshold go to a human; smaller ones are partial goodwill refunds.
         amount = remaining if remaining > REFUND_THRESHOLD else round(remaining * rng.choice([0.5, 1.0]), 2)
         refund = _call(client, "issue-refund", {"ticket_id": ticket_id, "amount": amount, "note": ticket["subject"]},
-                       tenant=tenant)
+                       tenant=tenant, workflow=workflow)
         record(f"refund {amount:g} on {ticket_id}", refund)
 
 
-def run_round(base_url: str, rng: random.Random) -> list[tuple[str, dict]]:
+def run_round(base_url: str, rng: random.Random, attack_rate: float = 1.0) -> list[tuple[str, dict]]:
     support = AgentGuardClient(base_url, MOCK_AGENT_WORKLOAD_REF)
     billing = AgentGuardClient(base_url, BILLING_AGENT)
+    triage = AgentGuardClient(base_url, TRIAGE_AGENT)
     ops = AgentGuardClient(base_url, OPS_AGENT)
     hijacked = AgentGuardClient(base_url, INTAKE_AGENT)
     results: list[tuple[str, dict]] = []
@@ -91,9 +104,14 @@ def run_round(base_url: str, rng: random.Random) -> list[tuple[str, dict]]:
     # Routine work on each tenant's own tickets (the seed numbers tenant-a's tickets first).
     work_tickets(support, "tenant-a", [f"T-{n}" for n in rng.sample(range(1001, 1050), 4)], rng, record)
     work_tickets(billing, "tenant-b", [f"T-{n}" for n in rng.sample(range(1055, 1072), 2)], rng, record)
-    record("create follow-up ticket", _call(support, "create-ticket", {
-        "subject": "Follow up with logistics on late delivery", "body": "Opened by support while working the queue.",
-    }))
+    for ticket_id in rng.sample(range(1001, 1050), rng.randint(1, 3)):
+        record(f"triage T-{ticket_id}", _call(triage, "read-ticket", {"ticket_id": f"T-{ticket_id}"}))
+    if rng.random() < 0.5:
+        record("create follow-up ticket", _call(support, "create-ticket", {
+            "subject": "Follow up with logistics on late delivery", "body": "Opened by support while working the queue.",
+        }))
+    if rng.random() >= attack_rate:
+        return results
 
     # A hijacked agent following injected instructions; the gateway (or the target) stops each one.
     record("claims another tenant's resource",
@@ -114,16 +132,21 @@ def run_round(base_url: str, rng: random.Random) -> list[tuple[str, dict]]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Send scripted traffic through a running gateway")
     parser.add_argument("--base-url", default="http://127.0.0.1:8000")
-    parser.add_argument("--rounds", type=int, default=1)
+    parser.add_argument("--rounds", type=int, default=1, help="0 = until stopped")
+    parser.add_argument("--interval", type=float, default=0, help="seconds between rounds")
+    parser.add_argument("--attack-rate", type=float, default=1.0, help="chance a round includes the attacks")
     parser.add_argument("--seed", type=int, default=None)
     args = parser.parse_args(argv)
 
     ensure_demo_agents()
     rng = random.Random(args.seed)
-    for i in range(args.rounds):
-        for label, response in run_round(args.base_url, rng):
+    rounds = itertools.count(1) if args.rounds == 0 else range(1, args.rounds + 1)
+    for i in rounds:
+        for label, response in run_round(args.base_url, rng, args.attack_rate):
             detail = response.get("reason") or ""
-            print(f"[round {i + 1}] {label:<36} {response['decision']:<18} {response['outcome']:<14} {detail[:60]}")
+            print(f"[round {i}] {label:<36} {response['decision']:<18} {response['outcome']:<14} {detail[:60]}", flush=True)
+        if args.interval:
+            time.sleep(args.interval)
     return 0
 
 

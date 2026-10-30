@@ -7,7 +7,7 @@ to end; routes in gateway/app.py are thin wrappers around it.
 import hashlib
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -178,9 +178,12 @@ def _record_decision(
         decision=decision,
         reason=reason,
         idempotency_key=request.idempotency_key,
+        workflow_id=request.workflow_id,
         requested_at=requested_at,
         decided_at=_now(),
         safe_request_ref=_ref(request.args),
+        agent_risk_category=identity.risk_category,
+        tool_risk_class=tool.risk_class,
     )
     session.add(execution)
     session.flush()  # assigns execution.id so RequestPayload can reference it
@@ -270,6 +273,7 @@ def _execute_and_record(
 ) -> dict[str, Any] | None:
     execution.executed_at = _now()
     session.commit()
+    broker_clock: list[datetime] = []
     try:
         with tracer.start_as_current_span("agentguard.broker.execute"):
             # The execution id, not the agent's key, is what the target system dedupes on:
@@ -278,6 +282,7 @@ def _execute_and_record(
                 tool.executor_ref, args,
                 idempotency_key=execution.id, tenant_id=execution.tenant_id,
                 timeout_seconds=settings.broker_timeout_seconds,
+                on_clock=lambda started, finished: broker_clock.extend((started, finished)),
             )
     except broker_service.BrokerTimeoutError:
         audit_service.record(session, execution.id, "execution_timeout", {})
@@ -291,7 +296,34 @@ def _execute_and_record(
         audit_service.record(session, execution.id, "execution_failed", {"error": str(exc)})
         return None
 
+    if broker_clock:
+        _check_clocks(session, execution, *broker_clock)
     return _finish_success(session, execution, result)
+
+
+def _check_clocks(session: Session, execution: Execution, broker_started: datetime, broker_finished: datetime) -> None:
+    """Cross-check the broker's clock against the gateway's (THREAT_MODEL #17).
+
+    The broker's run must fall inside the gateway's request to it. If it doesn't
+    by more than the tolerance, one clock is off and the trace's timeline can't
+    be trusted to order events across services; that's recorded, not hidden.
+    """
+    sent, received = _as_utc(execution.executed_at), _now()
+    tolerance = timedelta(seconds=settings.clock_skew_tolerance_seconds)
+    ahead = broker_started - sent  # negative: broker started "before" the gateway sent
+    behind = broker_finished - received  # positive: broker finished "after" the gateway got the answer
+    skew = ahead if ahead < -tolerance else behind if behind > tolerance else None
+    if skew is not None:
+        audit_service.record(session, execution.id, "clock_skew", {
+            "broker_started_at": broker_started.isoformat(),
+            "broker_finished_at": broker_finished.isoformat(),
+            "skew_ms": round(skew.total_seconds() * 1000),
+            "tolerance_ms": round(tolerance.total_seconds() * 1000),
+        })
+
+
+def _as_utc(value: datetime) -> datetime:
+    return value if value.tzinfo else value.replace(tzinfo=UTC)
 
 
 def _finish_success(session: Session, execution: Execution, result: dict[str, Any]) -> dict[str, Any]:

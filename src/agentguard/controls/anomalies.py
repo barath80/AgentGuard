@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from agentguard.config import settings
 from agentguard.controls.service import CONTROL_PREFIX, control_kind
-from agentguard.models import Execution, RequestPayload
+from agentguard.models import AuditEvent, Execution, RequestPayload
 
 
 @dataclass(frozen=True)
@@ -88,6 +88,24 @@ def _unresolved_timeouts(executions: list[Execution]) -> list[Finding]:
     ]
 
 
+def _clock_skew(session: Session) -> list[Finding]:
+    events = (
+        session.query(AuditEvent, Execution.agent_id)
+        .join(Execution, Execution.id == AuditEvent.execution_id)
+        .filter(AuditEvent.event_type == "clock_skew")
+        .all()
+    )
+    return [
+        Finding(
+            "clock_skew", agent_id,
+            f"broker and gateway clocks disagree by {event.payload.get('skew_ms')} ms; "
+            "cross-service ordering of this trace isn't reliable",
+            [event.execution_id],
+        )
+        for event, agent_id in events
+    ]
+
+
 def detect(session: Session) -> list[Finding]:
     executions = session.query(Execution).order_by(Execution.requested_at).all()
     by_agent: dict[str, list[Execution]] = defaultdict(list)
@@ -99,4 +117,5 @@ def detect(session: Session) -> list[Finding]:
         *_control_denials(by_agent),
         *_refund_without_read(session, by_agent),
         *_unresolved_timeouts(executions),
+        *_clock_skew(session),
     ]

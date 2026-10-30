@@ -233,6 +233,7 @@ export function ExecutionDrawer({ id, onClose }: { id: string; onClose: () => vo
                     ["Agent", `${e.agent_name} (${e.tenant_id})`],
                     ["Environment", <Mono key="env">{e.environment}</Mono>],
                     ["Idempotency key", <Hash key="idem" value={e.idempotency_key} length={24} />],
+                    ["Workflow", e.workflow_id ? <Mono key="wf">{e.workflow_id}</Mono> : "—"],
                     ["Request ref", <Hash key="req" value={e.safe_request_ref} length={24} />],
                     ["Result ref", <Hash key="res" value={e.safe_result_ref} length={24} />],
                     ["Decision latency", formatMs(e.latency_ms)],

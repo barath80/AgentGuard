@@ -8,7 +8,7 @@ The chart in `agentguard/` runs the same topology as `docker-compose.yml`, harde
 | `broker` (Deployment + PDB) | Runs authorized tool calls, re-verifying each one | Target credentials, broker service token | helpdesk (or your target), database |
 | `helpdesk` (optional) | The ticketing/billing target | Its own DB URL, credential hashes | its database |
 | `console` | Web UI (nginx) | nothing secret | gateway |
-| `migrate` Job | `alembic upgrade head`, pre-install/pre-upgrade hook | DB URL | database |
+| `migrate` Job | `alembic upgrade head` then runtime-role grants, pre-install/pre-upgrade hook | Schema-owner DB URL | database |
 | `train-anomaly` CronJob | Retrains the advisory anomaly model | DB URL (read-only connection) | database |
 
 Network policies start from default-deny. The result: only the broker can reach the target system, and only the gateway can reach the broker. So "only the broker holds target credentials" is enforced at the network layer as well as in code (THREAT_MODEL #7).
@@ -19,12 +19,12 @@ Create these from your secrets manager (External Secrets Operator, Secrets Store
 
 | Secret (values key) | Keys |
 |---|---|
-| `agentguard-database` (`database.existingSecret`) | `DATABASE_URL` |
+| `agentguard-database` (`database.existingSecret`) | `DATABASE_URL` (as the runtime role, `database.appRole`), `MIGRATION_DATABASE_URL` (as the schema owner) |
 | `agentguard-broker` (`broker.existingSecret`) | `BROKER_SERVICE_TOKEN`, `AGENTGUARD_CRED_TICKETS_READ`, `AGENTGUARD_CRED_TICKETS_WRITE`, `AGENTGUARD_CRED_BILLING_REFUND` |
 | `agentguard-helpdesk` (`helpdesk.existingSecret`) | `HELPDESK_DATABASE_URL`, `HELPDESK_SCOPE_TOKENS` (JSON `{scope: sha256(credential)}` matching the broker's credentials) |
 | `agentguard-console-tls` (`console.ingress.tls.secretName`) | TLS certificate, e.g. from cert-manager |
 
-After the first migration, apply `sql/postgres_audit_role.sql` so the app's own database role can't update or delete audit rows.
+Create two database roles first: an owner (owns the database, runs migrations) and the runtime role, which owns nothing. The migrate Job grants the runtime role SELECT/INSERT/UPDATE on ordinary tables, only SELECT/INSERT on the audit tables, and DELETE nowhere. Because it isn't the owner, a compromised service can't grant itself more (`tests/test_db_grants.py`).
 
 ## Install
 

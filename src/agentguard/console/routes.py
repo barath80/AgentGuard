@@ -57,6 +57,31 @@ class SimulationRequest(BaseModel):
     rules: list[dict[str, Any]] = Field(min_length=1)
 
 
+class PublishRequest(BaseModel):
+    description: str | None = Field(default=None, max_length=500)
+    rules: list[dict[str, Any]] = Field(min_length=1, max_length=200)
+    acknowledge_loosening: bool = False
+    reason: str | None = Field(default=None, max_length=1000)
+
+
+class RegisterAgentRequest(BaseModel):
+    workload_identity_ref: str = Field(max_length=127)
+    name: str | None = Field(default=None, max_length=100)
+    owner: str = Field(min_length=1, max_length=100)
+    tenant_id: str = Field(max_length=63)
+    approved_environments: list[Literal["dev", "staging", "prod"]] = Field(min_length=1)
+    risk_category: Literal["low", "medium", "high"] = "medium"
+    rate_limit_per_minute: int = Field(default=60, ge=1, le=10_000)
+    daily_spend_limit: float | None = Field(default=None, ge=0)
+
+
+def _parse_rules(version: int, rules: list[dict[str, Any]]) -> list:
+    try:
+        return parse_policy({"version": version, "rules": rules})[1]
+    except (ValueError, KeyError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=f"proposed policy is invalid: {exc}") from exc
+
+
 @router.get("/auth-config")
 def auth_config() -> dict[str, Any]:
     """Public: how the console should sign people in. Holds no secrets (PKCE public client)."""
@@ -99,6 +124,17 @@ def executions(
     )
 
 
+@router.get("/workflows")
+def workflows(
+    status: Literal["partial", "in_progress", "incomplete", "completed"] | None = None,
+    hours: int = Query(default=24, ge=1, le=168),
+    limit: int = Query(default=50, ge=1, le=200),
+    principal: Principal = Depends(require_principal),
+    session: Session = Depends(get_session),
+) -> list[dict[str, Any]]:
+    return _call(service.list_workflows, session, principal, status=status, hours=hours, limit=limit)
+
+
 @router.get("/executions/{execution_id}")
 def execution(
     execution_id: str,
@@ -132,6 +168,15 @@ def agents(
     principal: Principal = Depends(require_principal), session: Session = Depends(get_session)
 ) -> list[dict[str, Any]]:
     return service.list_agents(session, principal)
+
+
+@router.post("/agents", status_code=201)
+def register_agent(
+    request: RegisterAgentRequest,
+    principal: Principal = Depends(require_principal),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    return _call(service.register_agent, session, principal, request.model_dump())
 
 
 @router.post("/agents/{agent_id}/suspend")
@@ -168,11 +213,21 @@ def simulate(
     principal: Principal = Depends(require_principal),
     read_session: Session = Depends(get_read_only_session),
 ) -> dict[str, Any]:
-    try:
-        version, rules = parse_policy(request.model_dump())
-    except (ValueError, KeyError, TypeError) as exc:
-        raise HTTPException(status_code=422, detail=f"proposed policy is invalid: {exc}") from exc
-    return _call(service.run_simulation, read_session, principal, version, rules)
+    rules = _parse_rules(request.version, request.rules)
+    return _call(service.run_simulation, read_session, principal, request.version, rules)
+
+
+@router.post("/policies", status_code=201)
+def publish_policy(
+    request: PublishRequest,
+    principal: Principal = Depends(require_principal),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    rules = _parse_rules(0, request.rules)  # the server picks the version number
+    return _call(
+        service.publish_policy, session, principal, rules, description=request.description,
+        acknowledge_loosening=request.acknowledge_loosening, reason=request.reason,
+    )
 
 
 @router.post("/replay")

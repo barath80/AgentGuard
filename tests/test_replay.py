@@ -14,7 +14,7 @@ from agentguard.gateway import service as gateway_service
 from agentguard.gateway.schemas import ToolCallRequest
 from agentguard.identity.service import resolve_identity
 from agentguard.mock_systems import TICKETS
-from agentguard.models import Approval, AuditEvent, Execution, Policy
+from agentguard.models import Agent, Approval, AuditEvent, Execution, Policy, PolicyRule
 from agentguard.policy.engine import RuleSpec
 from agentguard.policy.seed import MOCK_AGENT_WORKLOAD_REF
 from agentguard.replay.service import load_policy_file, replay, simulate
@@ -88,6 +88,28 @@ def test_replay_uses_the_recorded_policy_version_not_the_active_one(recorded: Se
     assert len(report.results) == 4
     refund = next(r for r in report.results if r.recorded_decision == "allow" and r.tool_name == "issue-refund")
     assert refund.dry_run_output["dry_run"] is True
+
+
+def test_replay_uses_the_agent_category_recorded_at_decision_time(session: Session):
+    # A policy that depends on the agent's risk category: medium-risk agents may refund, others may not.
+    session.query(Policy).update({Policy.is_active: False})
+    policy = Policy(version=2, scope="global", is_active=True)
+    session.add(policy)
+    session.flush()
+    session.add(PolicyRule(policy_id=policy.id, priority=1, decision="allow",
+                           match={"agent_risk_category": ["medium"]}))
+    session.commit()
+    allowed = _call(session, "issue-refund", {"ticket_id": "T-1001", "amount": 20})
+    assert allowed.decision == "allow"
+
+    # The agent is re-categorised afterwards; the recorded decision must still reproduce.
+    session.query(Agent).filter(Agent.workload_identity_ref == MOCK_AGENT_WORKLOAD_REF).update(
+        {Agent.risk_category: "high"})
+    session.commit()
+
+    report = replay(session)
+    assert report.mismatches == []
+    assert session.get(Execution, allowed.execution_id).agent_risk_category == "medium"
 
 
 def test_simulation_and_replay_have_no_side_effects(recorded: Session):

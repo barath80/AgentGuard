@@ -9,6 +9,7 @@ services:
       - "5432:5432"
     volumes:
       - agentguard_pg_data:/var/lib/postgresql/data
+      - ./deploy/postgres:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U agentguard"]
       interval: 5s
@@ -25,10 +26,23 @@ services:
       timeout: 5s
       retries: 10
 
+  # Migrations and runtime grants, as the schema owner. Services connect as agentguard_app,
+  # which can't alter the audit log or grant itself privileges (agentguard.audit.grants).
+  migrate:
+    build: .
+    command: ["sh", "-c", "alembic upgrade head && python -m agentguard.audit.grants --app-role agentguard_app"]
+    healthcheck:
+      disable: true
+    environment:
+      DATABASE_URL: postgresql+psycopg://agentguard:agentguard@postgres:5432/agentguard
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   app:
     build: .
     environment:
-      DATABASE_URL: postgresql+psycopg://agentguard:agentguard@postgres:5432/agentguard
+      DATABASE_URL: postgresql+psycopg://agentguard_app:dev-only-agentguard-app@postgres:5432/agentguard
       REDIS_URL: redis://redis:6379/0
       ENVIRONMENT: development
       OPERATOR_TOKEN: dev-only-operator-token
@@ -47,8 +61,8 @@ services:
     ports:
       - "8000:8000"
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
 
@@ -62,7 +76,7 @@ services:
       timeout: 3s
       retries: 5
     environment:
-      DATABASE_URL: postgresql+psycopg://agentguard:agentguard@postgres:5432/agentguard
+      DATABASE_URL: postgresql+psycopg://agentguard_app:dev-only-agentguard-app@postgres:5432/agentguard
       TARGET_BACKEND: helpdesk
       HELPDESK_URL: http://helpdesk:8200
       BROKER_SERVICE_TOKEN: ${BROKER_SERVICE_TOKEN:-dev-only-broker-service-token}

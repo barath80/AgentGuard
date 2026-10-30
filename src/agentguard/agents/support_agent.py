@@ -21,6 +21,7 @@ import logging
 import os
 import sys
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -122,6 +123,7 @@ class GatewayTools:
         self.tenant_id = tenant_id
         self.environment = environment
         self.wait_for_approval = wait_for_approval
+        self.workflow_id: str | None = None  # set per ticket session
 
     def run(self, name: str, args: dict[str, Any], tool_use_id: str) -> tuple[dict[str, Any], ToolCallRecord]:
         gateway_tool = GATEWAY_TOOL.get(name)
@@ -137,6 +139,7 @@ class GatewayTools:
                 args=args,
                 # The tool_use id is stable for this exact call, so a retried request is deduplicated.
                 idempotency_key=f"{tool_use_id}",
+                workflow_id=self.workflow_id,
             )
         except httpx.HTTPStatusError as exc:
             detail = exc.response.text[:300]
@@ -197,6 +200,8 @@ def run_session(
         {"role": "user", "content": f"Please handle support ticket {ticket_id}."}
     ]
     result = SessionResult(ticket_id=ticket_id, final_text="", stop_reason=None)
+    # Every step of this ticket's handling is one workflow, so a half-finished one shows up in the console.
+    tools.workflow_id = f"{ticket_id}:{uuid.uuid4().hex[:12]}"
     usage = {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0}
 
     for _ in range(MAX_TURNS):

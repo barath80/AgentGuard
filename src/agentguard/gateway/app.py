@@ -7,15 +7,12 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from agentguard.approval import service as approval_service
 from agentguard.audit.stats import compute_stats
 from agentguard.config import settings
 from agentguard.console.routes import router as console_router
 from agentguard.db import Base, SessionLocal, engine, get_session
 from agentguard.gateway import service as gateway_service
 from agentguard.gateway.schemas import (
-    ApprovalDecisionRequest,
-    ApprovalDecisionResponse,
     ExecutionStatusResponse,
     ToolCallRequest,
     ToolCallResponse,
@@ -118,27 +115,6 @@ def get_execution(
         outcome=execution.outcome,
         trace_complete=execution.trace_complete,
     )
-
-
-@app.post("/v1/approvals/{approval_id}/decide", response_model=ApprovalDecisionResponse)
-def decide_approval(
-    approval_id: str,
-    request: ApprovalDecisionRequest,
-    x_approver_name: str = Header(...),
-    x_approver_role: str = Header(...),
-    x_approver_tenant: str = Header(...),
-    session: Session = Depends(get_session),
-) -> ApprovalDecisionResponse:
-    approver = approval_service.ApproverIdentity(
-        name=x_approver_name, role=x_approver_role, tenant_id=x_approver_tenant
-    )
-    try:
-        approval = approval_service.decide(
-            session, approval_id, approve=request.approve, approver=approver
-        )
-    except approval_service.ApprovalError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return ApprovalDecisionResponse(approval_id=approval.id, status=approval.status)
 
 
 @app.get("/v1/stats")

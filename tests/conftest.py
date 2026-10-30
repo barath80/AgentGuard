@@ -1,3 +1,4 @@
+import os
 import uuid
 
 import pytest
@@ -15,9 +16,16 @@ from agentguard.policy.seed import register_agent, seed
 def session(tmp_path) -> Session:
     """A fresh SQLite-backed, seeded session per test — fully isolated
     from the dev `agentguard.db` file and from other tests.
+
+    With TEST_DATABASE_URL set (CI's Postgres job), each test instead gets
+    freshly recreated tables in that database, to exercise Postgres-only SQL.
     """
-    db_path = tmp_path / f"test-{uuid.uuid4().hex}.db"
-    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+    if url := os.environ.get("TEST_DATABASE_URL"):
+        engine = create_engine(url)
+        Base.metadata.drop_all(bind=engine)
+    else:
+        db_path = tmp_path / f"test-{uuid.uuid4().hex}.db"
+        engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
     Base.metadata.create_all(bind=engine)
     session_factory = sessionmaker(bind=engine)
     db_session = session_factory()

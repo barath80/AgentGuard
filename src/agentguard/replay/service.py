@@ -21,7 +21,14 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from agentguard.models import Agent, Execution, RequestPayload, Tool
-from agentguard.policy.engine import DECISIONS, PolicyContext, RuleSpec, evaluate_rules, load_rules
+from agentguard.policy.engine import (
+    DECISIONS,
+    PolicyContext,
+    RuleSpec,
+    evaluate_rules,
+    load_rules,
+    validate_match,
+)
 from agentguard.replay.dry_run import DRY_RUN_EXECUTORS
 
 PRE_POLICY_VERSION = -1  # identity-scope denials made before any policy ran
@@ -45,8 +52,9 @@ class RecordedCall:
 def load_recorded_calls(session: Session) -> list[RecordedCall]:
     """Rebuild each recorded request's policy context from the trace.
 
-    Note: the agent's risk category is read from the registry as it is
-    *now*, not as it was at request time — the trace doesn't snapshot it.
+    The agent's risk category and the tool's risk class come from the
+    snapshot taken at request time; only rows recorded before snapshots
+    existed fall back to the registry as it is now.
     """
     calls = []
     for execution in session.query(Execution).order_by(Execution.requested_at).all():
@@ -60,10 +68,10 @@ def load_recorded_calls(session: Session) -> list[RecordedCall]:
                 executor_ref=tool.executor_ref if tool else "",
                 ctx=PolicyContext(
                     tool_name=execution.tool_name,
-                    risk_class=tool.risk_class if tool else "unknown",
+                    risk_class=execution.tool_risk_class or (tool.risk_class if tool else "unknown"),
                     environment=execution.environment,
                     tenant_id=execution.tenant_id,
-                    agent_risk_category=agent.risk_category if agent else "unknown",
+                    agent_risk_category=execution.agent_risk_category or (agent.risk_category if agent else "unknown"),
                     args=payload.args if payload else {},
                 ),
                 recorded_decision=execution.decision,
@@ -144,8 +152,10 @@ def parse_policy(data: dict[str, Any]) -> tuple[int, list[RuleSpec]]:
     version = int(data["version"])
     rules = []
     for i, raw in enumerate(data["rules"]):
-        if not isinstance(raw.get("match", {}), dict):
-            raise TypeError(f"rule {i}: match must be an object")
+        try:
+            validate_match(raw.get("match", {}))
+        except (TypeError, ValueError) as exc:
+            raise type(exc)(f"rule {i}: {exc}") from exc
         if raw["decision"] not in DECISIONS:
             raise ValueError(f"rule {i}: invalid decision {raw['decision']!r}")
         rules.append(

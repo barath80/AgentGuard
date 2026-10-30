@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     # Resilience and runtime controls (docs/THREAT_MODEL.md #5, #6, #14)
     kill_switch: bool = False  # deny every tool call, for all agents
     allow_reads_when_policy_unavailable: bool = False  # the only permitted fail-open, and off by default
+    # How far the broker's clock may disagree with the gateway's before it's flagged (THREAT_MODEL #17).
+    clock_skew_tolerance_seconds: float = 1.0
     broker_timeout_seconds: float = 5.0
 
     # Where tools actually run (broker/executors.py): "inprocess" test double, or the real "helpdesk".

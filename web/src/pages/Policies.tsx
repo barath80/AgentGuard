@@ -1,4 +1,4 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import clsx from "clsx";
 import {
   ArrowRight,
@@ -8,6 +8,7 @@ import {
   Lock,
   Play,
   RotateCcw,
+  Upload,
   ShieldAlert,
   TrendingDown,
   type LucideIcon,
@@ -221,7 +222,92 @@ function SimulationResult({ report }: { report: SimulationReport }) {
   );
 }
 
-function SimulationLab({ active, proposed }: { active?: PolicyVersion; proposed: ProposedPolicy[] }) {
+function PublishPanel({
+  report,
+  policy,
+  nextVersion,
+  onPublished,
+}: {
+  report: SimulationReport;
+  policy: { description?: string; rules: Rule[] };
+  nextVersion: number;
+  onPublished: (version: number) => void;
+}) {
+  const queryClient = useQueryClient();
+  const loosens = report.newly_allowed > 0;
+  const [acknowledged, setAcknowledged] = useState(false);
+  const [reason, setReason] = useState("");
+  const publish = useMutation({
+    mutationFn: () =>
+      api.publishPolicy({
+        description: policy.description,
+        rules: policy.rules,
+        acknowledge_loosening: loosens && acknowledged,
+        reason: loosens ? reason : undefined,
+      }),
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ["policies"] });
+      queryClient.invalidateQueries({ queryKey: ["overview"] });
+      onPublished(result.version);
+    },
+  });
+  const ready = !loosens || (acknowledged && reason.trim().length >= 10);
+
+  return (
+    <div className="mt-5 rounded-xl border border-line bg-surface-2 p-4">
+      <p className="font-medium text-ink">Publish as v{nextVersion}</p>
+      <p className="mt-1 text-[13px] text-ink-3">
+        Becomes the active policy immediately. The server re-runs this simulation before publishing, and pending
+        approvals issued under the current version will need re-approval.
+      </p>
+      {loosens && (
+        <div className="mt-3 space-y-2">
+          <label className="flex items-start gap-2 text-[13px] text-critical-ink">
+            <input
+              type="checkbox"
+              checked={acknowledged}
+              onChange={(e) => setAcknowledged(e.target.checked)}
+              className="mt-0.5 size-4 accent-[var(--color-critical)]"
+            />
+            I understand this allows {plural(report.newly_allowed, "recorded call")} that were denied or gated.
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-xs text-ink-2">Reason (kept in the operator log)</span>
+            <textarea
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              rows={2}
+              className="w-full rounded-lg border border-line-strong bg-surface p-2 text-[13px] text-ink outline-none focus:border-accent focus:ring-3 focus:ring-accent/20"
+            />
+          </label>
+        </div>
+      )}
+      {publish.error && <p role="alert" className="mt-3 text-[13px] text-critical-ink">{publish.error.message}</p>}
+      <Button
+        variant={loosens ? "danger" : "primary"}
+        icon={Upload}
+        className="mt-3"
+        loading={publish.isPending}
+        disabled={!ready}
+        onClick={() => publish.mutate()}
+      >
+        Publish v{nextVersion}
+      </Button>
+    </div>
+  );
+}
+
+function SimulationLab({
+  active,
+  proposed,
+  canPublish,
+  nextVersion,
+}: {
+  active?: PolicyVersion;
+  proposed: ProposedPolicy[];
+  canPublish: boolean;
+  nextVersion: number;
+}) {
   const options = useMemo(
     () => [
       ...proposed.map((p) => ({
@@ -238,6 +324,9 @@ function SimulationLab({ active, proposed }: { active?: PolicyVersion; proposed:
   const [source, setSource] = useState("");
   const [text, setText] = useState("");
   const simulate = useMutation({ mutationFn: (policy: unknown) => api.simulate(policy) });
+  // Publishing is offered only for exactly the text that was simulated.
+  const [simulatedText, setSimulatedText] = useState<string | null>(null);
+  const [published, setPublished] = useState<number | null>(null);
 
   useEffect(() => {
     if (!source && options.length) {
@@ -308,7 +397,11 @@ function SimulationLab({ active, proposed }: { active?: PolicyVersion; proposed:
             icon={Play}
             loading={simulate.isPending}
             disabled={!!parsed.error}
-            onClick={() => simulate.mutate(parsed.value)}
+            onClick={() => {
+              setSimulatedText(text);
+              setPublished(null);
+              simulate.mutate(parsed.value);
+            }}
             className="w-full"
           >
             Run simulation
@@ -316,8 +409,30 @@ function SimulationLab({ active, proposed }: { active?: PolicyVersion; proposed:
         </div>
         <div className="min-w-0">
           {simulate.error && <ErrorState error={simulate.error} />}
+          {published !== null && (
+            <div role="status" className="mb-4 flex items-center gap-2 rounded-lg bg-good-soft px-3 py-2 text-[13px] text-good-ink">
+              <CheckCircle2 aria-hidden className="size-4" /> Published v{published}; it's now the active policy.
+            </div>
+          )}
           {simulate.data ? (
-            <SimulationResult report={simulate.data} />
+            <>
+              <SimulationResult report={simulate.data} />
+              {canPublish && published === null && (
+                simulatedText === text ? (
+                  <PublishPanel
+                    report={simulate.data}
+                    policy={parsed.value as { description?: string; rules: Rule[] }}
+                    nextVersion={nextVersion}
+                    onPublished={(version) => {
+                      setPublished(version);
+                      simulate.reset();
+                    }}
+                  />
+                ) : (
+                  <p className="mt-5 text-[13px] text-ink-3">The policy changed since this simulation. Run it again to publish.</p>
+                )
+              )}
+            </>
           ) : (
             !simulate.error && (
               <div className="grid h-full min-h-60 place-items-center rounded-xl border border-dashed border-line-strong p-8 text-center">
@@ -448,7 +563,12 @@ export function Policies() {
       <div className="mt-4">
         {me.reads_all_tenants ? (
           policies.data ? (
-            <SimulationLab active={active} proposed={policies.data.proposed} />
+            <SimulationLab
+              active={active}
+              proposed={policies.data.proposed}
+              canPublish={me.can_operate}
+              nextVersion={Math.max(0, ...versions.map((v) => v.version)) + 1}
+            />
           ) : (
             <Skeleton className="h-96 rounded-xl" />
           )

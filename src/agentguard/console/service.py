@@ -8,11 +8,14 @@ gateway and CLI use, and are recorded in `operator_actions`.
 """
 
 import json
+import re
 from collections import Counter, defaultdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import Integer, case, cast, func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Query, Session
 
 from agentguard.approval import service as approval_service
@@ -85,6 +88,7 @@ def _execution_summary(e: Execution, names: dict[str, str]) -> dict[str, Any]:
         "outcome": e.outcome,
         "reason": e.reason,
         "approval_id": e.approval_id,
+        "workflow_id": e.workflow_id,
         "requested_at": _iso(e.requested_at),
         "completed_at": _iso(e.completed_at),
         "latency_ms": _latency_ms(e),
@@ -106,36 +110,77 @@ def whoami(principal: Principal) -> dict[str, Any]:
 # --- Overview -----------------------------------------------------------------
 
 
+def _seconds_after(session: Session, column, origin: datetime):
+    """SQL expression: seconds from `origin` to `column`, in this database's dialect."""
+    if session.get_bind().dialect.name == "postgresql":
+        return func.extract("epoch", column - origin)
+    # SQLite stores these as naive UTC text; julianday() parses it.
+    naive = origin.astimezone(UTC).replace(tzinfo=None).isoformat(sep=" ")
+    return (func.julianday(column) - func.julianday(naive)) * 86400.0
+
+
+def _latency_percentiles(session: Session, scoped: Query) -> dict[str, float | None]:
+    decided = scoped.filter(Execution.decided_at.is_not(None))
+    if session.get_bind().dialect.name == "postgresql":
+        latency = func.extract("epoch", Execution.decided_at - Execution.requested_at) * 1000
+        p50, p95 = decided.with_entities(
+            func.percentile_cont(0.5).within_group(latency),
+            func.percentile_cont(0.95).within_group(latency),
+        ).one()
+        return {"p50": None if p50 is None else float(p50), "p95": None if p95 is None else float(p95)}
+    # SQLite has no percentile aggregate: fetch only the two timestamps (dev/test volumes).
+    latencies = [
+        (_utc(decided_at) - _utc(requested_at)).total_seconds() * 1000
+        for requested_at, decided_at in decided.with_entities(Execution.requested_at, Execution.decided_at)
+    ]
+    return {"p50": percentile(latencies, 50), "p95": percentile(latencies, 95)}
+
+
 def overview(session: Session, principal: Principal, window_hours: int) -> dict[str, Any]:
+    """Headline metrics for a window, aggregated in the database rather than in Python."""
     if window_hours not in WINDOWS:
         raise ConsoleError(f"window_hours must be one of {sorted(WINDOWS)}", status_code=422)
     bucket = WINDOWS[window_hours]
     now = datetime.now(UTC)
-    since = now - timedelta(hours=window_hours)
-
-    executions = [
-        e for e in _scoped(session.query(Execution), principal, Execution.tenant_id)
-        .filter(Execution.requested_at >= since)
-        .order_by(Execution.requested_at)
-        .all()
-    ]
-    names = _agent_names(session)
-
     # Fixed buckets ending now, so an idle period shows as zeros rather than a gap.
     bucket_count = int(timedelta(hours=window_hours) / bucket)
     start = now - bucket * bucket_count
+
+    in_window = _scoped(session.query(Execution), principal, Execution.tenant_id).filter(
+        Execution.requested_at >= start
+    )
+
+    def counts(column) -> dict[str, int]:
+        return {key: n for key, n in in_window.with_entities(column, func.count()).group_by(column)}
+
+    by_decision = counts(Execution.decision)
+    by_outcome = counts(Execution.outcome)
+
     series = [
         {"start": _iso(start + bucket * i), "allow": 0, "deny": 0, "approval_required": 0}
         for i in range(bucket_count)
     ]
-    for e in executions:
-        index = min(int((_utc(e.requested_at) - start) / bucket), bucket_count - 1)
-        if index >= 0 and e.decision in series[index]:
-            series[index][e.decision] += 1
+    bucket_index = cast(_seconds_after(session, Execution.requested_at, start) / bucket.total_seconds(), Integer)
+    for index, decision, n in (
+        in_window.with_entities(bucket_index, Execution.decision, func.count()).group_by(bucket_index, Execution.decision)
+    ):
+        index = min(max(int(index), 0), bucket_count - 1)
+        if decision in series[index]:
+            series[index][decision] += n
 
-    terminal = [e for e in executions if e.outcome != "not_attempted"]
-    latencies = [ms for e in executions if (ms := _latency_ms(e)) is not None]
-    denial_reasons = Counter(_reason_group(e.reason) for e in executions if e.decision == "deny")
+    terminal, complete = in_window.filter(Execution.outcome != "not_attempted").with_entities(
+        func.count(), func.coalesce(func.sum(case((Execution.trace_complete.is_(True), 1), else_=0)), 0)
+    ).one()
+
+    denial_reasons: Counter[str] = Counter()
+    for reason, n in (
+        in_window.filter(Execution.decision == "deny")
+        .with_entities(Execution.reason, func.count()).group_by(Execution.reason)
+    ):
+        denial_reasons[_reason_group(reason)] += n
+
+    recent = in_window.order_by(Execution.requested_at.desc()).limit(8).all()
+    names = _agent_names(session)
     active = session.query(Policy).filter(Policy.is_active.is_(True)).one_or_none()
     pending = _scoped(session.query(Approval), principal, Approval.tenant_id).filter(
         Approval.status == "pending", Approval.expires_at > now
@@ -145,18 +190,18 @@ def overview(session: Session, principal: Principal, window_hours: int) -> dict[
         "window_hours": window_hours,
         "generated_at": _iso(now),
         "totals": {
-            "calls": len(executions),
-            "by_decision": dict(Counter(e.decision for e in executions)),
-            "by_outcome": dict(Counter(e.outcome for e in executions)),
-            "by_tool": dict(Counter(e.tool_name for e in executions)),
+            "calls": sum(by_decision.values()),
+            "by_decision": by_decision,
+            "by_outcome": by_outcome,
+            "by_tool": counts(Execution.tool_name),
         },
-        "latency_ms": {"p50": percentile(latencies, 50), "p95": percentile(latencies, 95)},
-        "trace_completeness": (sum(e.trace_complete for e in terminal) / len(terminal)) if terminal else None,
-        "unresolved_timeouts": sum(1 for e in executions if e.outcome == "timeout"),
+        "latency_ms": _latency_percentiles(session, in_window),
+        "trace_completeness": (complete / terminal) if terminal else None,
+        "unresolved_timeouts": by_outcome.get("timeout", 0),
         "pending_approvals": pending.count(),
         "denials_by_reason": dict(denial_reasons.most_common(8)),
         "series": series,
-        "recent": [_execution_summary(e, names) for e in reversed(executions[-8:])],
+        "recent": [_execution_summary(e, names) for e in recent],
         "posture": {
             "environment": settings.environment,
             "kill_switch": settings.kill_switch,
@@ -176,6 +221,100 @@ def _reason_group(reason: str | None) -> str:
     if reason.startswith(CONTROL_PREFIX):
         return reason.split(" ", 1)[0]
     return reason.split(":", 1)[0] if reason.startswith("unexpected") else reason
+
+
+# --- Workflows (THREAT_MODEL #18) ------------------------------------------------
+
+WORKFLOW_STATUSES = ("partial", "in_progress", "incomplete", "completed")
+
+
+def _step_state(e: Execution, approvals: dict[str, Approval]) -> str:
+    """done | waiting | blocked | failed | unconfirmed (timed out, may have happened)."""
+    if e.outcome == "success":
+        return "done"
+    if e.outcome == "timeout":
+        return "unconfirmed"
+    if e.outcome == "failure":
+        return "failed"
+    if e.decision == "approval_required":
+        approval = approvals.get(e.approval_id or "")
+        if approval is not None and approval.status in ("pending", "approved"):
+            return "waiting"
+    return "blocked"
+
+
+def _workflow_status(steps: list[dict[str, Any]]) -> str:
+    states = {s["state"] for s in steps}
+    if states == {"done"}:
+        return "completed"
+    if "waiting" in states:
+        return "in_progress"
+    # Something after the first step didn't happen. If a write already took effect (or
+    # might have), the task is half-done and someone has to decide what to undo or finish.
+    if any(s["state"] == "unconfirmed" or (s["state"] == "done" and s["writes"]) for s in steps):
+        return "partial"
+    return "incomplete"
+
+
+def list_workflows(
+    session: Session, principal: Principal, *, status: str | None, hours: int, limit: int,
+) -> list[dict[str, Any]]:
+    """Group each agent's calls by workflow label and report how far each got.
+
+    A workflow is keyed by (agent, workflow_id): the label is the agent's own, so
+    one agent can't add steps to another's workflow.
+    """
+    if status is not None and status not in WORKFLOW_STATUSES:
+        raise ConsoleError(f"status must be one of {list(WORKFLOW_STATUSES)}", status_code=422)
+    since = datetime.now(UTC) - timedelta(hours=hours)
+    executions = (
+        _scoped(session.query(Execution), principal, Execution.tenant_id)
+        .filter(Execution.workflow_id.is_not(None), Execution.requested_at >= since)
+        .order_by(Execution.requested_at)
+        .all()
+    )
+    approval_ids = [e.approval_id for e in executions if e.approval_id]
+    approvals = {a.id: a for a in session.query(Approval).filter(Approval.id.in_(approval_ids))} if approval_ids else {}
+    risk = dict(session.query(Tool.id, Tool.risk_class).all())
+    names = _agent_names(session)
+
+    groups: dict[tuple[str, str], list[Execution]] = defaultdict(list)
+    for e in executions:
+        groups[(e.agent_id, e.workflow_id)].append(e)
+
+    workflows = []
+    for (agent_id, workflow_id), group in groups.items():
+        steps = [
+            {
+                "execution_id": e.id,
+                "tool_name": e.tool_name,
+                "target_resource": e.target_resource,
+                "decision": e.decision,
+                "outcome": e.outcome,
+                "reason": e.reason,
+                "state": _step_state(e, approvals),
+                "writes": risk.get(e.tool_id, "write-high") != "read",
+                "requested_at": _iso(e.requested_at),
+            }
+            for e in group
+        ]
+        workflow_status = _workflow_status(steps)
+        if status is not None and workflow_status != status:
+            continue
+        workflows.append({
+            "workflow_id": workflow_id,
+            "agent_id": agent_id,
+            "agent_name": names.get(agent_id, agent_id),
+            "tenant_id": group[0].tenant_id,
+            "status": workflow_status,
+            "started_at": steps[0]["requested_at"],
+            "last_step_at": steps[-1]["requested_at"],
+            "steps": steps,
+            # What actually changed in target systems: the first thing to look at when a task stopped half-way.
+            "side_effects": [s for s in steps if s["writes"] and s["state"] in ("done", "unconfirmed")],
+        })
+    workflows.sort(key=lambda w: w["last_step_at"] or "", reverse=True)
+    return workflows[:limit]
 
 
 # --- Executions -----------------------------------------------------------------
@@ -375,6 +514,50 @@ def list_agents(session: Session, principal: Principal) -> list[dict[str, Any]]:
     return items
 
 
+ENVIRONMENTS = ("dev", "staging", "prod")
+RISK_CATEGORIES = ("low", "medium", "high")
+_WORKLOAD_REF = re.compile(r"^[a-z0-9][a-z0-9.-]{0,62}@[a-z0-9][a-z0-9.-]{0,62}$")
+_TENANT = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+
+
+def register_agent(session: Session, principal: Principal, spec: dict[str, Any]) -> dict[str, Any]:
+    """Add an agent to the registry. Its workload identity is what the identity layer
+    verifies; nothing an agent sends later can change these attributes."""
+    if not principal.can_operate:
+        raise ConsoleError("only operators can register agents", status_code=403)
+    ref, tenant = spec["workload_identity_ref"], spec["tenant_id"]
+    if not _WORKLOAD_REF.match(ref):
+        raise ConsoleError("workload identity must look like name@pool (lowercase)", status_code=422)
+    if not _TENANT.match(tenant):
+        raise ConsoleError("tenant id must be lowercase letters, digits and dashes", status_code=422)
+    if not principal.can_read_tenant(tenant):
+        raise ConsoleError("you can't register agents for that tenant", status_code=403)
+    environments = sorted(set(spec["approved_environments"]), key=ENVIRONMENTS.index)
+    agent = Agent(
+        name=spec.get("name") or ref.split("@")[0],
+        owner=spec["owner"],
+        tenant_id=tenant,
+        workload_identity_ref=ref,
+        status="active",
+        approved_environments=environments,
+        risk_category=spec["risk_category"],
+        rate_limit_per_minute=spec["rate_limit_per_minute"],
+        daily_spend_limit=spec.get("daily_spend_limit"),
+    )
+    session.add(agent)
+    try:
+        session.flush()
+    except IntegrityError as exc:
+        session.rollback()
+        raise ConsoleError("an agent with that workload identity is already registered", status_code=409) from exc
+    _record_action(session, principal, "agent.registered", "agent", agent.id, {
+        "workload_identity_ref": ref, "tenant_id": tenant, "approved_environments": environments,
+        "risk_category": agent.risk_category, "rate_limit_per_minute": agent.rate_limit_per_minute,
+        "daily_spend_limit": agent.daily_spend_limit,
+    })
+    return {"id": agent.id, "name": agent.name, "workload_identity_ref": ref, "tenant_id": tenant}
+
+
 def set_agent_suspended(session: Session, principal: Principal, agent_id: str, *, suspended: bool) -> dict[str, Any]:
     if not principal.can_operate:
         raise ConsoleError("only operators can suspend or resume agents", status_code=403)
@@ -495,6 +678,70 @@ def run_simulation(read_session: Session, principal: Principal, version: int, ru
         "unattended_rate_after": report.unattended_rate_after,
         "verdict": "loosens_security" if report.newly_allowed else "safe_to_review",
         "changes": [change(c) for c in report.changes],
+    }
+
+
+def publish_policy(
+    session: Session, principal: Principal, rules: list, *, description: str | None,
+    acknowledge_loosening: bool, reason: str | None,
+) -> dict[str, Any]:
+    """Publish rules as the next policy version and make it active.
+
+    The proposal is simulated against every recorded call first, server-side (a
+    client-supplied simulation result is never trusted). If it would allow anything
+    the current record shows was denied or gated, publishing needs an explicit
+    acknowledgement and a reason, both kept in the operator log. Pending approvals
+    issued under the old version stop being executable, as with any policy change.
+    """
+    if not principal.can_operate:
+        raise ConsoleError("only operators can publish policy", status_code=403)
+    _require_global_reader(principal)
+    if not rules:
+        raise ConsoleError("a policy needs at least one rule", status_code=422)
+    for rule in rules:
+        if rule.decision == "approval_required" and not rule.approval_role:
+            raise ConsoleError(f"rule {rule.id}: approval_required needs an approval_role", status_code=422)
+
+    current = session.query(func.max(Policy.version)).scalar() or 0
+    version = current + 1
+    report = simulate_policy(session, rules, version)
+    loosening = [c.execution_id for c in report.newly_allowed]
+    if loosening and not acknowledge_loosening:
+        raise ConsoleError(
+            f"this policy would newly allow {len(loosening)} recorded call(s) that were denied or gated; "
+            "review the simulation and acknowledge the loosening with a reason to publish",
+            status_code=409,
+        )
+    if loosening and (not reason or len(reason.strip()) < 10):
+        raise ConsoleError("explain why the loosening is intended (at least 10 characters)", status_code=422)
+
+    session.query(Policy).filter(Policy.is_active.is_(True)).update({Policy.is_active: False})
+    policy = Policy(version=version, scope="global", is_active=True)
+    session.add(policy)
+    try:
+        session.flush()
+    except IntegrityError as exc:
+        session.rollback()
+        raise ConsoleError("another policy version was published at the same time; try again", status_code=409) from exc
+    for rule in rules:
+        session.add(PolicyRule(
+            policy_id=policy.id, match=rule.match, decision=rule.decision,
+            approval_role=rule.approval_role, priority=rule.priority,
+        ))
+    _record_action(session, principal, "policy.published", "policy", policy.id, {
+        "version": version,
+        "previous_version": current,
+        "description": description,
+        "rules": len(rules),
+        "evaluated_calls": report.evaluated,
+        "newly_allowed": len(loosening),
+        "newly_restricted": len(report.newly_restricted),
+        "loosening_acknowledged": bool(loosening),
+        "reason": reason,
+    })
+    return {
+        "id": policy.id, "version": version, "previous_version": current,
+        "newly_allowed": len(loosening), "newly_restricted": len(report.newly_restricted),
     }
 
 
