@@ -914,6 +914,18 @@ def list_anomalies(read_session: Session, principal: Principal, *, days: int = 7
     return findings
 
 
+def warm_model_imports() -> None:
+    """Import the anomaly model's libraries ahead of the first risk request (seconds of work)."""
+    try:
+        import agentguard.ml.model  # noqa: F401
+    except ImportError:  # ML extras not installed: agent_risk reports that when asked
+        pass
+
+
+_risk_cache: dict[tuple, tuple[float, tuple[list, dict]]] = {}
+_risk_lock = threading.Lock()
+
+
 def agent_risk(read_session: Session, principal: Principal, hours: int) -> dict[str, Any]:
     """Advisory behavioural risk per agent from the anomaly model, if one is trained."""
     try:
@@ -932,9 +944,22 @@ def agent_risk(read_session: Session, principal: Principal, hours: int) -> dict[
         return {"available": False, "reason": str(exc), "agents": []}
     agents = {a.id: a for a in read_session.query(Agent).all()}
     rows = []
-    recent = recent_windows(read_session, model, hours=hours)
-    drift = drift_report(model, recent)
-    for row in agent_risk_from_windows(model, recent):
+    # Scoring a day of windows is the expensive part; it's shared by every viewer for a few
+    # seconds (keyed by the model file too, so a newly saved model shows up at once).
+    model_path = Path(settings.anomaly_model_path)
+    key = (str(read_session.get_bind().url), hours, model_path.stat().st_mtime_ns)
+    ttl = settings.console_cache_seconds
+    with _risk_lock:
+        hit = _risk_cache.get(key)
+    if ttl > 0 and hit and time.monotonic() - hit[0] < ttl:
+        scored, drift = hit[1]
+    else:
+        recent = recent_windows(read_session, model, hours=hours)
+        scored, drift = agent_risk_from_windows(model, recent), drift_report(model, recent)
+        with _risk_lock:
+            _risk_cache.clear()
+            _risk_cache[key] = (time.monotonic(), (scored, drift))
+    for row in scored:
         agent = agents.get(row["agent_id"])
         if agent is None or not principal.can_read_tenant(agent.tenant_id):
             continue

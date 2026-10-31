@@ -122,7 +122,12 @@ def _clock_skew(session: Session, since: datetime | None) -> list[Finding]:
 
 def detect(session: Session, *, since: datetime | None = None) -> list[Finding]:
     """Findings over the whole trace, or only calls requested at or after `since`."""
-    query = session.query(Execution).order_by(Execution.requested_at)
+    # Plain rows of just the fields the checks read: a week of busy traffic is tens of thousands
+    # of calls, and full ORM objects made this report take seconds.
+    query = session.query(
+        Execution.id, Execution.agent_id, Execution.requested_at, Execution.decision, Execution.reason,
+        Execution.tool_name, Execution.outcome,
+    ).order_by(Execution.requested_at)
     if since is not None:
         query = query.filter(Execution.requested_at >= since)
     executions = query.all()

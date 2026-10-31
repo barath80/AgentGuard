@@ -9,6 +9,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
 from agentguard.models import Execution, RequestPayload
@@ -65,16 +66,20 @@ def _window_start(ts: datetime, window: timedelta = WINDOW) -> datetime:
 
 def build_windows(session: Session, *, since: datetime | None = None, window: timedelta = WINDOW) -> list[Window]:
     """One row per (agent, `window`-long bucket) that has at least one call."""
-    query = session.query(Execution).order_by(Execution.requested_at)
+    # Only the columns the features use, as plain rows (no ORM objects), with arguments joined in
+    # for the two tools whose arguments matter. A day of busy traffic is tens of thousands of rows.
+    query = session.query(
+        Execution.id, Execution.agent_id, Execution.requested_at, Execution.decision, Execution.reason,
+        Execution.tool_name, Execution.outcome, Execution.target_resource, RequestPayload.args,
+    ).outerjoin(RequestPayload, and_(
+        RequestPayload.execution_id == Execution.id, Execution.tool_name.in_(("read-ticket", "issue-refund")),
+    )).order_by(Execution.requested_at)
     if since is not None:
         query = query.filter(Execution.requested_at >= since)
     executions = query.all()
-    payloads = {
-        p.execution_id: p.args or {}
-        for p in session.query(RequestPayload).filter(RequestPayload.execution_id.in_([e.id for e in executions]))
-    } if executions else {}
+    payloads = {e.id: e.args or {} for e in executions}
 
-    grouped: dict[tuple[str, datetime], list[Execution]] = defaultdict(list)
+    grouped: dict[tuple[str, datetime], list] = defaultdict(list)
     for e in executions:
         grouped[(e.agent_id, _window_start(_utc(e.requested_at), window))].append(e)
 

@@ -38,7 +38,11 @@ Smaller wins along the way:
 - A published policy's rules are cached by id. A version is never edited, only replaced, and the active version is still read on every call.
 - Pooled HTTP clients replace a client per call, which cost about 230 ms each on Windows.
 - An (agent, time) index serves the per-call controls.
-- The console's anomaly report batches its lookups instead of running one per call (24 s down to 0.5 s).
+- The console's anomaly report batches its lookups instead of running one per call (24 s down to 0.5 s), and reads plain rows rather than ORM objects.
+- On a day of fleet traffic (32,000 calls), the console's behavioural-risk view took 54 s. Three changes brought it to 2.4 s cold and 0.15 s cached:
+  - Window building selects only the columns the features use, with arguments joined in: 9 s down to 0.9 s, verified to produce identical windows.
+  - Model libraries import in the background at startup instead of on the first request.
+  - The report is shared by every viewer for a few seconds, keyed by the model file so a newly saved model shows up at once.
 
 ## Results
 
@@ -51,21 +55,36 @@ All runs below were measured on AC power with fresh databases. Calls/s are for t
 | Before | 25.0 calls/s | 561 ms | 1,221 ms |
 | After (fewer commits and statements, cached rules, pooled clients) | **72.2 calls/s** | **151 ms** | **568 ms** |
 
-**Scale-out after the concurrency fixes** (pools 3 + 2 per process, two repeats each):
+**After the concurrency fixes, one instance per service** (pools 3 + 2), measured in two separate sessions:
 
-| Workers (gateway / broker / helpdesk) | 32 clients | 64 clients |
+| Clients | Throughput | p50 |
 |---|---|---|
-| 1 / 1 / 1 | 140, 139 calls/s · p50 220 ms | 137, 137 calls/s · p50 455 ms |
-| 2 / 1 / 1 | 212, 192 calls/s · p50 147–158 ms | 169, 179 calls/s · p50 320–325 ms |
-| 4 / 2 / 2 | 246, 241 calls/s · p50 109–113 ms | collapsed: found defect 6 |
-| 8 / 4 / 4 | collapsed: found defect 6 | collapsed: found defect 6 |
+| 32 | 140, 139 calls/s (session 1); 143, 146 calls/s (session 2) | 215–220 ms |
+| 64 | 137, 137 calls/s (session 1); 143, 138 calls/s (session 2) | 435–455 ms |
 
-For comparison, before defect 5 was fixed, one worker at 64 clients completed **0 calls** (deadlock). After it, the same configuration holds 137 calls/s, with latency growing as the queue grows (Little's law), which is the expected behaviour at saturation.
+Before defect 5 was fixed, this configuration completed **0 calls** at 64 clients (deadlock). Now it holds its throughput at saturation, and latency grows with the queue (Little's law), which is correct behaviour.
 
-**Not yet re-measured:** 4/2/2 and 8/4/4 since fixing defects 6 and 7. The re-run happened on battery power, which slowed this laptop's CPU by about 45% and made results swing by 10× between repeats, so it was discarded. To reproduce on AC power:
-1. Start the stack.
-2. Run `python -m agentguard.evaluation.loadtest` at each configuration, with fresh databases.
-3. Repeat each run at least twice.
+**Adding gateway replicas.** These are independent single-process replicas, the production shape, with the load tester spreading clients across them (`--base-url` takes a comma-separated list). All four measured in one session:
+
+| Replicas (gateway / broker / helpdesk) | 32 clients |
+|---|---|
+| 1 / 1 / 1 | 42.5, 42.5 calls/s |
+| 2 / 1 / 1 | 69.7, 71.8 calls/s (**1.7×**) |
+| 2 / 2 / 1 | 67.4, 67.9 calls/s |
+| 4 / 2 / 2 | 71.5, 70.4 calls/s |
+
+A second gateway adds 1.7×. Beyond that, extra replicas add nothing **on this machine**, because the load client, every service and Postgres share one laptop's 16 hardware threads.
+
+### What this laptop can and can't tell you
+
+Treat the numbers above as *relative*, within a session. Across sessions on this one laptop, identical code measured anywhere from 24 to 146 calls/s for one instance. The variation tracked:
+- **battery power:** about 45% slower CPU, and results swinging 10× between repeats;
+- **sleep and resume;**
+- **background load** from the desktop applications sharing the machine.
+
+Uvicorn's `--workers` mode on Windows was also erratic: it shares one listening socket across spawned processes, and a keep-alive connection stays pinned to whichever worker accepted it. That's why the replica runs use independent processes, as Kubernetes pods would.
+
+Measure absolute capacity on separate hosts or a real cluster: `python -m agentguard.evaluation.loadtest --base-url <gateway or load balancer>`, with fresh databases and at least two repeats.
 
 ## Load balancing
 
@@ -76,4 +95,4 @@ For comparison, before defect 5 was fixed, one worker at 64 clients completed **
 
 - **Connections:** replicas × workers × (`DB_POOL_SIZE` + `DB_MAX_OVERFLOW`) for the gateway and broker, plus the helpdesk's, must stay under Postgres `max_connections`. With an autoscaler, size for `maxReplicas` or put PgBouncer in front.
 - **Threads:** synchronous handlers share a thread pool (`REQUEST_THREADS`, anyio default 40). After the fixes above, a request never holds a connection while waiting for a thread, so a small pool queues instead of deadlocking. `integration/test_pool_starvation.py` proves it with 1 connection, 3 threads and 12 concurrent requests.
-- **Where it saturates:** with one or two gateway workers the gateway process is the limit: its threads queue for the five pooled connections, and a second worker adds 45% at 32 clients. On this single laptop, client, three services and Postgres share 16 hardware threads, so the machine itself saturates above about 250 calls/s. Separate hosts, or pods, scale further.
+- **Where it saturates:** a single gateway's threads queue for its pooled connections, and a second replica adds 1.7×. On a single laptop the machine itself is the next limit; separate hosts or pods scale further.

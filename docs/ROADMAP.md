@@ -118,12 +118,14 @@ Deferred to later phases on purpose: agent/tool CRUD endpoints (only one seeded 
 - [x] Policy shadow mode: run a proposal beside the live policy on real traffic, record what it would have decided, report agreement and every difference; can't affect a live decision (adversarial tests)
 - [x] Model drift monitoring: training distribution stored with the model, PSI per feature on live windows, shown on the model card; the nightly Kubernetes job checks drift and fails on it instead of blindly retraining
 - [x] Retrained on a second labelled dataset with four new attack types. The first model caught 17% of slow scraping and 36% of ticket flooding before retraining; the retrained model scores PR-AUC 1.00, precision 0.92, recall 1.00 on held-out data (`docs/EVALUATION.md`)
-- [ ] Re-run the scale-out benchmark (4/2/2, 8/4/4) on AC power since fixing defects 6–7 (`docs/PERFORMANCE.md`)
+- [x] Replica scale-out measured with independent processes (the production shape): a second gateway replica adds 1.7× (`docs/PERFORMANCE.md`)
+- [ ] Measure absolute capacity on separate hosts or a cluster; one laptop running client, services and Postgres together varied too much across sessions for absolute numbers
 
 ## Status
 
 Phases 0–9 are implemented and tested, including on Postgres 16. What's left needs something this environment doesn't have, and none of it blocks the system working correctly:
 
+- **Absolute throughput on real infrastructure** (Phase 10): relative scaling is measured; absolute numbers need separate hosts.
 - **Live red-team run with a real model** (Phase 7): needs a `GEMINI_API_KEY` (or an Anthropic key); the harness is ready (`agentguard.evaluation.live_agent`).
 - **Running on a real Kubernetes cluster** (Phase 8): CI lints and schema-validates the chart; no cluster was available.
 - **In-cluster mTLS** (Phase 8): needs a service mesh in that cluster.

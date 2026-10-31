@@ -109,22 +109,35 @@ async def _client(http: httpx.AsyncClient, agents: list[str], deadline: float, r
 
 async def run(base_url: str, agents: list[str], *, concurrency: int, duration: float, warmup: float,
               refund_share: float, label: str, seed: int = 0) -> LoadReport:
-    limits = httpx.Limits(max_connections=concurrency, max_keepalive_connections=concurrency)
-    async with httpx.AsyncClient(base_url=base_url, limits=limits, timeout=30) as http:
+    """`base_url` may list several gateway replicas, comma-separated. Virtual clients are spread
+    across them round-robin (client-side load balancing), so replicas can be measured without a
+    load balancer in the path."""
+    urls = [u.strip() for u in base_url.split(",") if u.strip()]
+    per_url = -(-concurrency // len(urls))
+    limits = httpx.Limits(max_connections=per_url, max_keepalive_connections=per_url)
+    clients = [httpx.AsyncClient(base_url=url, limits=limits, timeout=30) for url in urls]
+
+    def http_for(i: int) -> httpx.AsyncClient:
+        return clients[i % len(clients)]
+
+    try:
         noop: list[float] = []
         if warmup:
             deadline = time.monotonic() + warmup
-            await asyncio.gather(*(_client(http, agents, deadline, random.Random(seed + i), refund_share,
+            await asyncio.gather(*(_client(http_for(i), agents, deadline, random.Random(seed + i), refund_share,
                                            noop, Counter(), Counter(), Counter(), record=False)
                                    for i in range(concurrency)))
         latencies: list[float] = []
         decisions, outcomes, errors = Counter(), Counter(), Counter()
         started = time.monotonic()
         deadline = started + duration
-        await asyncio.gather(*(_client(http, agents, deadline, random.Random(seed + 1000 + i), refund_share,
+        await asyncio.gather(*(_client(http_for(i), agents, deadline, random.Random(seed + 1000 + i), refund_share,
                                        latencies, decisions, outcomes, errors, record=True)
                                for i in range(concurrency)))
         elapsed = time.monotonic() - started
+    finally:
+        for client in clients:
+            await client.aclose()
     return LoadReport(
         label=label, concurrency=concurrency, agents=len(agents), duration_s=round(elapsed, 1),
         requests=len(latencies), throughput_rps=round(len(latencies) / elapsed, 1),
@@ -134,7 +147,8 @@ async def run(base_url: str, agents: list[str], *, concurrency: int, duration: f
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Load-test a running AgentGuard stack")
-    parser.add_argument("--base-url", default="http://127.0.0.1:8000")
+    parser.add_argument("--base-url", default="http://127.0.0.1:8000",
+                        help="gateway URL, or several replicas comma-separated (spread round-robin)")
     parser.add_argument("--operator-token", required=True, help="registers the load agents via the console API")
     parser.add_argument("--agents", type=int, default=20)
     parser.add_argument("--concurrency", type=int, default=32)
@@ -146,7 +160,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", dest="json_path")
     args = parser.parse_args(argv)
 
-    agents = register_agents(args.base_url, args.operator_token, args.agents, args.run_id)
+    agents = register_agents(args.base_url.split(",")[0].strip(), args.operator_token, args.agents, args.run_id)
     report = asyncio.run(run(args.base_url, agents, concurrency=args.concurrency, duration=args.duration,
                              warmup=args.warmup, refund_share=args.refund_share, label=args.label))
     lat = report.latency_ms

@@ -1,4 +1,5 @@
 import hmac
+import threading
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -11,6 +12,7 @@ from sqlalchemy.orm import Session
 from agentguard.audit.stats import compute_stats
 from agentguard.broker import service as broker_service
 from agentguard.config import settings
+from agentguard.console import service as console_service
 from agentguard.console.routes import router as console_router
 from agentguard.db import Base, SessionLocal, engine, get_session
 from agentguard.gateway import service as gateway_service
@@ -38,6 +40,9 @@ async def _lifespan(_app: FastAPI):
         anyio.to_thread.current_default_thread_limiter().total_tokens = settings.request_threads
     if settings.broker_url:
         broker_service._remote()  # build the pooled client now, not inside the first burst
+    # The console's risk view needs slow-to-import libraries; it warms them in the background so
+    # neither startup nor the first request pays for it. (Enforcement never touches the model.)
+    threading.Thread(target=console_service.warm_model_imports, name="warm-ml-imports", daemon=True).start()
     Base.metadata.create_all(bind=engine)
     with SessionLocal() as session:
         seed(session)

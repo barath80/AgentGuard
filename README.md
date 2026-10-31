@@ -23,4 +23,22 @@ Open http://localhost:8080 and choose **Continue with single sign-on**. Keycloak
 
 Kubernetes: see [deploy/helm/README.md](deploy/helm/README.md).
 
-See [SETUP.md](SETUP.md) to run it locally, [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design, and [docs/ROADMAP.md](docs/ROADMAP.md) for build status.
+## Measured results
+
+Every number below comes from a run in this repository, with its method and caveats in the linked document.
+
+- **Enforcement:** the evaluation gate requires zero false allows across the routine and adversarial suites on every push. Against an agent holding the target credential directly, the gateway blocked or gated 5 of 5 attack scenarios ([EXPERIMENT.md](docs/EXPERIMENT.md)).
+- **Behavioural model:** on held-out traffic, precision 0.92, recall 1.00 and 1.1% false alarms. It caught 97% of attack types left out of its training, against 17% for slow scraping before retraining ([EVALUATION.md](docs/EVALUATION.md)).
+- **Concurrency:** load testing found seven defects that only appear under concurrent load, including duplicate execution, budget overspend and a deadlock above 40 concurrent requests. Each is fixed and pinned by a test that fails on the old code. Hot-path work took one instance from 25 to 72 calls/s at the same load, and a second gateway replica adds 1.7× ([PERFORMANCE.md](docs/PERFORMANCE.md)).
+
+## Documentation
+
+| | |
+|---|---|
+| [SETUP.md](SETUP.md) | Running it: native, Compose, the LLM agent, the model notebook, load tests |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Layers, deployed topology, shadow mode, drift |
+| [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) | Each threat, its mitigation, and the test that proves it |
+| [docs/EVALUATION.md](docs/EVALUATION.md) | Test suites, metrics, the behavioural model's evaluation |
+| [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Load testing, the defects it found, scale-out results, sizing |
+| [docs/EXPERIMENT.md](docs/EXPERIMENT.md) | Direct access against gateway-enforced access |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | What's built, phase by phase, and what's left |
