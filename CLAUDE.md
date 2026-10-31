@@ -41,7 +41,7 @@ See [SETUP.md](SETUP.md) for full steps (native venv+SQLite or Docker Compose). 
 - `src/agentguard/agents/` — the LLM support agent: shared prompt/tools/gateway mapping in `common.py`, model loops for Gemini (`gemini_agent.py`) and Claude (`support_agent.py`). Acts only through the gateway; must never import the broker.
 - `src/agentguard/ml/` — advisory behavioural anomaly model. No enforcement module (gateway, policy, approval, broker, controls, identity) may import it (enforced by `tests/test_ml.py`).
 - `src/helpdesk/` — the ticketing/billing target service. A separate system: must never import `agentguard` (enforced by `tests/test_helpdesk.py`).
-- `deploy/` — Helm chart and Keycloak realm.
+- `deploy/` — Helm chart, Keycloak realm, and `deploy/vm/` (single-VM production install: k3s, Postgres, Keycloak, scripts).
 - `src/agentguard/console/` — operator console API (`/v1/console/*`). Human sign-in maps a token to a configured principal; approver identity comes from that principal, never from headers. Read models are tenant-scoped.
 - `web/` — operator console UI (React + TypeScript + Vite), served by nginx in production, which exposes only `/v1/console/*`.
 - `src/agentguard/evaluation/` — routine/adversarial cases and the metrics runner that gates CI.

@@ -33,7 +33,10 @@ def register_agent(session: Session, workload_identity_ref: str, **overrides) ->
     return agent
 
 
-def seed(session: Session) -> None:
+def seed(session: Session, *, demo: bool = True) -> None:
+    """The tool registry and policy v1. `demo` also registers the mock support agent and uses
+    the demo policy; production (`demo=False`) registers no agent (operators do that) and starts
+    from the production baseline. Does nothing if the registry already exists."""
     if session.query(Tool).count() > 0:
         return  # already seeded
 
@@ -67,6 +70,9 @@ def seed(session: Session) -> None:
         },
     )
     session.add_all([read_ticket, create_ticket, issue_refund])
+    if not demo:
+        _production_policy(session)
+        return
 
     agent = Agent(
         name="mock-support-agent",
@@ -114,3 +120,39 @@ def seed(session: Session) -> None:
     ]
     session.add_all(rules)
     session.commit()
+
+
+def _production_policy(session: Session) -> None:
+    """Baseline for real use, in any environment an agent is approved for: reads and new tickets
+    run; refunds up to the threshold run, larger ones wait for a support lead; anything
+    destructive is denied. Unmatched calls are denied (fail closed). Publish changes through the
+    console's simulation lab, which re-checks them against recorded traffic."""
+    policy = Policy(version=1, scope="global", is_active=True)
+    session.add(policy)
+    session.flush()
+    session.add_all([
+        PolicyRule(policy_id=policy.id, priority=10, decision="deny", match={"risk_class": ["destructive"]}),
+        PolicyRule(policy_id=policy.id, priority=20, decision="approval_required", approval_role=MOCK_APPROVER_ROLE,
+                   match={"tool": "issue-refund", "arg": {"field": "amount", "op": "gt", "value": REFUND_THRESHOLD}}),
+        PolicyRule(policy_id=policy.id, priority=30, decision="allow",
+                   match={"tool": "issue-refund", "arg": {"field": "amount", "op": "lte", "value": REFUND_THRESHOLD}}),
+        PolicyRule(policy_id=policy.id, priority=40, decision="allow", match={"tool": ["read-ticket", "create-ticket"]}),
+    ])
+    session.commit()
+
+
+def main() -> int:
+    """`python -m agentguard.policy.seed`: create the registry once, as the schema owner, after
+    migrations (the deployment's migrate step). Production installs get no demo data."""
+    from agentguard.config import settings
+    from agentguard.db import SessionLocal
+
+    with SessionLocal() as session:
+        before = session.query(Tool).count()
+        seed(session, demo=settings.environment != "production")
+        print("registry already present" if before else f"seeded registry ({settings.environment})")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

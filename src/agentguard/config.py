@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -51,6 +53,12 @@ class Settings(BaseSettings):
     oidc_jwks_url: str | None = None  # defaults to the issuer's Keycloak certs endpoint
     # Only these IdP roles mean anything here; IdP defaults (offline_access, ...) are dropped.
     oidc_allowed_roles: str = "operator,viewer,support-lead"
+    # How agents prove their identity to the gateway. "header": a trusted proxy or mesh sets
+    # x-workload-identity (dev, tests, or behind mTLS). "oidc": each agent is an OAuth client that
+    # presents a short-lived client-credentials token from OIDC_ISSUER; required when the agent
+    # API is reachable by anything other than a trusted proxy.
+    agent_auth: Literal["header", "oidc"] = "header"
+    agent_audience: str = "agentguard-gateway"  # tokens must be issued for this audience
 
     # Behavioural anomaly model (agentguard.ml). Advisory only; never consulted for decisions.
     anomaly_model_path: str = "models/anomaly.joblib"

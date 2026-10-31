@@ -99,7 +99,8 @@ Deferred to later phases on purpose: agent/tool CRUD endpoints (only one seeded 
 - [x] Compose topology: gateway, separate broker, helpdesk with its own Postgres, Keycloak, console
 - [x] Helm chart: per-role Deployments, pre-upgrade migration Job, HPA and PDBs, default-deny NetworkPolicies, non-root read-only containers, secrets only by reference to externally managed Secrets
 - [x] CI renders and schema-validates the chart and builds both images
-- [ ] Render the chart and run it on a real cluster (Helm wasn't available in this environment; CI covers lint and schema)
+- [x] Render the chart locally with Helm 3.16 (`helm lint`, `helm template` with the VM values)
+- [ ] Run it on a real cluster: the single-VM kit (`deploy/vm/`) is ready; it needs the VM
 - [ ] In-cluster mTLS (service mesh) between gateway, broker and target
 
 ## Phase 9 — Closing the threat-model gaps
@@ -121,13 +122,24 @@ Deferred to later phases on purpose: agent/tool CRUD endpoints (only one seeded 
 - [x] Replica scale-out measured with independent processes (the production shape): a second gateway replica adds 1.7× (`docs/PERFORMANCE.md`)
 - [ ] Measure absolute capacity on separate hosts or a cluster; one laptop running client, services and Postgres together varied too much across sessions for absolute numbers
 
+## Phase 11 — Production deployment, real data
+
+- [x] Agent authentication with OAuth 2.0 client-credentials tokens (`AGENT_AUTH=oidc`): signature, issuer, audience, expiry and service-account checks; the SDK fetches, caches and refreshes tokens (`AgentGuardClient.from_env`); adversarial tests
+- [x] Production seed: tool registry and a baseline policy, no demo agents; run by the migrate Job as the schema owner, never by serving replicas
+- [x] Helpdesk starts empty: operator CLI (`helpdesk.admin`) for real customers and tickets, collision-free ticket ids, no synthetic seed in production
+- [x] Fail closed on missing secrets in production: the broker refuses to run without its target credential, the helpdesk accepts no credential without configured hashes (tests)
+- [x] Helm: agent ingress exposing only the agent API, agent token settings, model volume access mode, extra gateway egress for an in-cluster IdP
+- [x] Single-VM kit (`deploy/vm/`): k3s, cert-manager with Let's Encrypt, in-cluster Postgres with separate roles and nightly backups, Keycloak in production mode with a user-less realm, generated secrets kept off the repository, scripts to add operators and agents
+- [x] Production-mode end-to-end run on Postgres: token-authenticated agent, real records, forged identities rejected
+- [ ] Deploy to the Oracle Cloud VM and verify over HTTPS
+
 ## Status
 
 Phases 0–9 are implemented and tested, including on Postgres 16. What's left needs something this environment doesn't have, and none of it blocks the system working correctly:
 
 - **Absolute throughput on real infrastructure** (Phase 10): relative scaling is measured; absolute numbers need separate hosts.
 - **Live red-team run with a real model** (Phase 7): needs a `GEMINI_API_KEY` (or an Anthropic key); the harness is ready (`agentguard.evaluation.live_agent`).
-- **Running on a real Kubernetes cluster** (Phase 8): CI lints and schema-validates the chart; no cluster was available.
+- **Running on a real cluster** (Phases 8, 11): the chart renders and the single-VM kit is ready; deploying needs the VM (`deploy/vm/README.md`).
 - **In-cluster mTLS** (Phase 8): needs a service mesh in that cluster.
 
 Each is called out in `docs/THREAT_MODEL.md` or above rather than left out silently.

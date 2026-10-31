@@ -107,3 +107,9 @@ def test_helpdesk_does_not_import_agentguard():
 
 def test_unknown_lookup_scope_is_rejected(client):
     assert client.get(f"/v1/writes/{uuid.uuid4()}", params={"scope": "admin"}, headers=h("tickets:read")).status_code == 422
+
+
+def test_production_without_configured_credentials_accepts_nothing(client, monkeypatch):
+    monkeypatch.delenv("HELPDESK_SCOPE_TOKENS", raising=False)
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    assert client.get("/v1/tickets/T-A1", headers=h("tickets:read")).status_code == 401

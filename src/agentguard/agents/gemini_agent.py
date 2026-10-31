@@ -161,7 +161,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     client = genai.Client()
     tools = GatewayTools(
-        AgentGuardClient(args.gateway, WORKLOAD_IDENTITY),
+        AgentGuardClient.from_env(args.gateway, WORKLOAD_IDENTITY),
         tenant_id=args.tenant, environment=args.environment, wait_for_approval=args.wait_for_approval,
     )
     results = []

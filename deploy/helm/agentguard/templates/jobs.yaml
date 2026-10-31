@@ -29,9 +29,12 @@ spec:
       containers:
         - name: migrate
           image: {{ include "agentguard.image" . }}
-          # As the schema owner: migrate, then grant the runtime role exactly what it needs.
-          command: ["sh", "-c", "alembic upgrade head && python -m agentguard.audit.grants --app-role \"$APP_ROLE\""]
+          # As the schema owner: migrate, grant the runtime role exactly what it needs, then make sure
+          # the tool registry and baseline policy exist (idempotent; never demo agents in production).
+          command: ["sh", "-c", "alembic upgrade head && python -m agentguard.audit.grants --app-role \"$APP_ROLE\" && python -m agentguard.policy.seed"]
           env:
+            - name: ENVIRONMENT
+              value: {{ .Values.environment | quote }}
             - name: DATABASE_URL
               valueFrom: { secretKeyRef: { name: {{ .Values.database.existingSecret }}, key: MIGRATION_DATABASE_URL } }
             - name: APP_ROLE
@@ -50,7 +53,7 @@ metadata:
   labels:
     {{- include "agentguard.labels" . | nindent 4 }}
 spec:
-  accessModes: [ReadWriteMany]
+  accessModes: [{{ .Values.anomalyModel.storage.accessMode }}]
   {{- with .Values.anomalyModel.storage.storageClassName }}
   storageClassName: {{ . }}
   {{- end }}

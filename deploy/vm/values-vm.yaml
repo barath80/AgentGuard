@@ -1,0 +1,69 @@
+# Helm values for the single-VM install (k3s: Traefik ingress, local-path storage, kube-router
+# network policies). deploy.sh passes the hosts, image tags and issuer with --set; nothing
+# secret is here: every existingSecret is created by deploy.sh from generated values.
+
+image:
+  repository: agentguard
+  pullPolicy: Never          # built on the VM and imported into k3s; nothing is pulled
+consoleImage:
+  repository: agentguard-console
+  pullPolicy: Never
+
+environment: production
+
+database:
+  existingSecret: agentguard-database
+  appRole: agentguard_app
+  # Postgres runs in the cluster (namespace `data`); this is k3s's pod network.
+  egressCIDR: 10.42.0.0/16
+
+gateway:
+  replicas: 2
+  autoscaling:
+    enabled: false
+  ingress:
+    enabled: true
+    className: traefik
+    tls: { secretName: agentguard-gateway-tls }
+    annotations:
+      cert-manager.io/cluster-issuer: letsencrypt
+
+broker:
+  replicas: 2
+
+console:
+  replicas: 1
+  ingress:
+    enabled: true
+    className: traefik
+    tls: { secretName: agentguard-console-tls }
+    annotations:
+      cert-manager.io/cluster-issuer: letsencrypt
+  ingressControllerNamespace: kube-system   # Traefik, in k3s
+
+auth:
+  agentAuth: oidc
+  staticTokens: false
+  oidc:
+    clientId: agentguard-console
+    # The gateway fetches signing keys from Keycloak inside the cluster; tokens still carry
+    # (and are checked against) the public issuer.
+    jwksUrl: http://keycloak.keycloak.svc:8080/realms/agentguard/protocol/openid-connect/certs
+
+helpdesk:
+  enabled: true
+  existingSecret: agentguard-helpdesk
+  seedSyntheticData: false   # real use only: records come from helpdesk.admin and real tickets
+
+anomalyModel:
+  storage:
+    accessMode: ReadWriteOnce   # one node; local-path supports nothing else
+
+networkPolicies:
+  enabled: true
+  gatewayExtraEgress:
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: keycloak }
+      ports:
+        - { protocol: TCP, port: 8080 }

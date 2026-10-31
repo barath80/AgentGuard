@@ -23,6 +23,7 @@ from agentguard.gateway.schemas import (
 )
 from agentguard.gateway.telemetry import configure_telemetry
 from agentguard.identity.service import IdentityError, ResolvedIdentity, resolve_identity
+from agentguard.identity.tokens import TokenError, workload_identity_from_token
 from agentguard.models import Execution
 
 
@@ -43,9 +44,12 @@ async def _lifespan(_app: FastAPI):
     # The console's risk view needs slow-to-import libraries; it warms them in the background so
     # neither startup nor the first request pays for it. (Enforcement never touches the model.)
     threading.Thread(target=console_service.warm_model_imports, name="warm-ml-imports", daemon=True).start()
-    Base.metadata.create_all(bind=engine)
-    with SessionLocal() as session:
-        seed(session)
+    if settings.environment != "production":
+        # Dev convenience. In production the schema and registry come from the migrate step
+        # (alembic, then `python -m agentguard.policy.seed`), never from a serving replica.
+        Base.metadata.create_all(bind=engine)
+        with SessionLocal() as session:
+            seed(session)
     yield
 
 
@@ -79,11 +83,17 @@ def readyz(session: Session = Depends(get_session)) -> dict[str, str]:
 def require_identity(
     session: Session = Depends(get_session),
     x_workload_identity: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
 ) -> ResolvedIdentity:
     try:
-        identity = resolve_identity(session, x_workload_identity)
-    except IdentityError as exc:
-        raise HTTPException(status_code=401, detail=str(exc)) from exc
+        if settings.agent_auth == "oidc":
+            # Only a verified token names the agent; the header is ignored in this mode.
+            workload_identity = workload_identity_from_token(authorization)
+        else:
+            workload_identity = x_workload_identity
+        identity = resolve_identity(session, workload_identity)
+    except (IdentityError, TokenError) as exc:
+        raise HTTPException(status_code=401, detail=str(exc), headers={"WWW-Authenticate": "Bearer"}) from exc
     finally:
         # End the lookup's transaction now. The endpoint runs on another hop through the thread
         # pool; holding a pooled connection across that hop deadlocks once concurrent requests

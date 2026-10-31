@@ -68,6 +68,10 @@ spec:
               value: {{ .Values.auth.oidc.jwksUrl | quote }}
             - name: OIDC_ALLOWED_ROLES
               value: {{ .Values.auth.oidc.allowedRoles | quote }}
+            - name: AGENT_AUTH
+              value: {{ .Values.auth.agentAuth | quote }}
+            - name: AGENT_AUDIENCE
+              value: {{ .Values.auth.agentAudience | quote }}
             - name: CONSOLE_STATIC_TOKENS
               value: {{ .Values.auth.staticTokens | quote }}
             - name: ANOMALY_MODEL_PATH
@@ -122,6 +126,35 @@ spec:
   selector:
     matchLabels:
       {{- include "agentguard.selector" (dict "ctx" . "component" "gateway") | nindent 6 }}
+{{- if .Values.gateway.ingress.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "agentguard.labels" . | nindent 4 }}
+  {{- with .Values.gateway.ingress.annotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  ingressClassName: {{ .Values.gateway.ingress.className }}
+  tls:
+    - hosts: [{{ .Values.gateway.ingress.host | quote }}]
+      secretName: {{ .Values.gateway.ingress.tls.secretName }}
+  rules:
+    - host: {{ .Values.gateway.ingress.host | quote }}
+      http:
+        paths:
+          {{- range list "/v1/tool-calls" "/v1/executions" }}
+          - path: {{ . }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $name }}
+                port: { name: http }
+          {{- end }}
+{{- end }}
 {{- if .Values.gateway.autoscaling.enabled }}
 ---
 apiVersion: autoscaling/v2

@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import time
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -54,6 +55,9 @@ def scope_token_hashes() -> dict[str, str]:
     configured = os.environ.get("HELPDESK_SCOPE_TOKENS")
     if configured:
         return {scope: digest.lower() for scope, digest in json.loads(configured).items()}
+    if os.environ.get("ENVIRONMENT") == "production":
+        # Fail closed: the dev credentials are public, so no scope accepts anything.
+        return {}
     # Synthetic dev credentials, matching the broker's dev defaults.
     return {scope: _hash(f"dev-only-{scope}") for scope in SCOPES}
 
@@ -66,6 +70,10 @@ async def get_session() -> AsyncIterator[Session]:
         yield session
     finally:
         session.close()
+
+
+def new_ticket_id() -> str:
+    return f"T-{uuid.uuid4().hex[:10].upper()}"
 
 
 def require_scope(scope: str):
@@ -181,9 +189,9 @@ def create_ticket(
         return replayed
     if WRITE_DELAY_SECONDS:
         time.sleep(WRITE_DELAY_SECONDS)
-    count = session.scalar(select(func.count()).select_from(Ticket)) or 0
     ticket = Ticket(
-        id=f"T-{1001 + count}", tenant_id=x_tenant_id, subject=request.subject,
+        # Random, not a running count: two tickets created at once must never collide.
+        id=new_ticket_id(), tenant_id=x_tenant_id, subject=request.subject,
         body=request.body, customer_id=request.customer_id,
     )
     session.add(ticket)

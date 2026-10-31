@@ -1,0 +1,159 @@
+# In-cluster Postgres for a single-VM install: AgentGuard, the helpdesk and Keycloak each get
+# their own database and role. Passwords come from the `postgres-credentials` Secret that
+# deploy.sh creates from generated values; nothing secret is in this file.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: data
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+  namespace: data
+data:
+  # Runs once, when the data volume is first created. `postgres` is the only superuser;
+  # `agentguard` owns the AgentGuard schema (runs migrations) and is not a superuser, and
+  # `agentguard_app`, which the services use, owns nothing (privileges come from the migrate Job).
+  10-roles.sh: |
+    set -eu
+    psql -v ON_ERROR_STOP=1 --username postgres --dbname postgres <<SQL
+    CREATE ROLE agentguard LOGIN PASSWORD '${AGENTGUARD_OWNER_PASSWORD}';
+    CREATE DATABASE agentguard OWNER agentguard;
+    CREATE ROLE agentguard_app LOGIN PASSWORD '${AGENTGUARD_APP_PASSWORD}';
+    CREATE ROLE helpdesk LOGIN PASSWORD '${HELPDESK_DB_PASSWORD}';
+    CREATE DATABASE helpdesk OWNER helpdesk;
+    CREATE ROLE keycloak LOGIN PASSWORD '${KEYCLOAK_DB_PASSWORD}';
+    CREATE DATABASE keycloak OWNER keycloak;
+    REVOKE ALL ON DATABASE agentguard, helpdesk, keycloak FROM PUBLIC;
+    GRANT CONNECT ON DATABASE agentguard TO agentguard_app;
+    SQL
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: data
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels: { app: postgres }
+  template:
+    metadata:
+      labels: { app: postgres }
+    spec:
+      securityContext:
+        fsGroup: 70
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: postgres
+          image: postgres:16.6-alpine
+          args: ["-c", "max_connections=200", "-c", "shared_buffers=512MB"]
+          ports:
+            - { name: pg, containerPort: 5432 }
+          env:
+            - { name: POSTGRES_USER, value: postgres }
+            - { name: POSTGRES_DB, value: postgres }
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+            - { name: POSTGRES_INITDB_ARGS, value: "--auth-host=scram-sha-256" }
+          envFrom:
+            # POSTGRES_PASSWORD and the per-role passwords that 10-roles.sh reads.
+            - secretRef: { name: postgres-credentials }
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "postgres"] }
+            periodSeconds: 5
+          livenessProbe:
+            exec: { command: ["pg_isready", "-U", "postgres"] }
+            periodSeconds: 20
+            failureThreshold: 6
+          resources:
+            requests: { cpu: 250m, memory: 512Mi }
+            limits: { memory: 2Gi }
+          securityContext:
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+            - { name: init, mountPath: /docker-entrypoint-initdb.d, readOnly: true }
+      volumes:
+        - name: init
+          configMap: { name: postgres-init }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests: { storage: 20Gi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: data
+spec:
+  selector: { app: postgres }
+  ports:
+    - { name: pg, port: 5432, targetPort: pg }
+---
+# Only AgentGuard, Keycloak and the backup job may reach the database.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres
+  namespace: data
+spec:
+  podSelector:
+    matchLabels: { app: postgres }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchExpressions:
+              - { key: kubernetes.io/metadata.name, operator: In, values: [agentguard, keycloak] }
+        - podSelector:
+            matchLabels: { app: postgres-backup }
+      ports:
+        - { protocol: TCP, port: 5432 }
+---
+# Nightly logical backups of every database, kept 14 days on the VM's disk at
+# /var/backups/agentguard. Copy them off the VM as well (deploy/vm/README.md, "Backups").
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgres-backup
+  namespace: data
+spec:
+  schedule: "30 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        metadata:
+          labels: { app: postgres-backup }
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: backup
+              image: postgres:16.6-alpine
+              command:
+                - sh
+                - -ec
+                - |
+                  stamp=$(date -u +%Y%m%dT%H%M%SZ)
+                  for db in agentguard helpdesk keycloak; do
+                    pg_dump -h postgres -U postgres -Fc "$db" > "/backups/$db-$stamp.dump"
+                  done
+                  find /backups -name '*.dump' -mtime +14 -delete
+                  ls -l /backups
+              env:
+                - name: PGPASSWORD
+                  valueFrom: { secretKeyRef: { name: postgres-credentials, key: POSTGRES_PASSWORD } }
+              volumeMounts:
+                - { name: backups, mountPath: /backups }
+          volumes:
+            - name: backups
+              hostPath: { path: /var/backups/agentguard, type: DirectoryOrCreate }

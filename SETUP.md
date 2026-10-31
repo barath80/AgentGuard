@@ -160,6 +160,10 @@ Matches the target architecture in `docs/ARCHITECTURE.md`.
 3. Check it's up: `http://localhost:8000/docs` for the API, `http://localhost:8080` for the operator console (nginx; starts once the gateway's `/readyz` healthcheck passes). Compose also runs the broker, the helpdesk with its own Postgres, and Keycloak on `http://localhost:8081`: choose **Continue with single sign-on** and use `olivia` (operator), `dana` (support lead, tenant-a), `lee` (support lead, tenant-b) or `sam` (viewer), all with the synthetic password `dev-only-password`.
 4. Tear down: `docker compose down` (add `-v` to also drop the Postgres data volume).
 
+## Production deployment
+
+`deploy/vm/README.md` deploys the whole system on one free Oracle Cloud VM: k3s, HTTPS, Postgres, Keycloak, agents authenticated with OAuth tokens, and an empty helpdesk that only real use fills. For an existing cluster, use the Helm chart directly (`deploy/helm/README.md`).
+
 ## Environment variables
 
 Copy `.env.example` to `.env` and adjust if needed — defaults work for both options above:
@@ -168,7 +172,7 @@ Copy `.env.example` to `.env` and adjust if needed — defaults work for both op
 |---|---|---|
 | `DATABASE_URL` | `postgresql+psycopg://agentguard:agentguard@localhost:5432/agentguard` in `.env.example`; falls back to `sqlite:///./agentguard.db` if unset | Native/SQLite runs can just leave `.env` absent or unset this |
 | `REDIS_URL` | `redis://localhost:6379/0` | Not consumed by any code path yet — runtime controls derive their state from the trace in the database |
-| `ENVIRONMENT` | `development` | |
+| `ENVIRONMENT` | `development` | `production`: no table creation or demo seeding at start-up (the migrate step does both), and missing target credentials are errors instead of dev defaults |
 | `APPROVAL_DEFAULT_EXPIRY_SECONDS` | `900` | How long a pending approval stays valid before it expires |
 | `KILL_SWITCH` | `false` | `true` denies every tool call for every agent (needs a restart; to stop one agent immediately, suspend it instead — see below) |
 | `ALLOW_READS_WHEN_POLICY_UNAVAILABLE` | `false` | The only fail-open: if policy evaluation errors, still allow `read`-class tools. Writes are always denied |
@@ -188,6 +192,8 @@ Copy `.env.example` to `.env` and adjust if needed — defaults work for both op
 | `AGENTGUARD_CRED_<SCOPE>` | `dev-only-<scope>` | Target credentials, e.g. `AGENTGUARD_CRED_BILLING_REFUND`. Give them to the broker only |
 | `OIDC_ISSUER` / `OIDC_CLIENT_ID` / `OIDC_JWKS_URL` | unset / `agentguard-console` / issuer's certs | Console SSO. Issuer must equal the tokens' `iss` |
 | `OIDC_ALLOWED_ROLES` | `operator,viewer,support-lead` | IdP roles that mean anything here; everything else in the token is ignored |
+| `AGENT_AUTH` / `AGENT_AUDIENCE` | `header` / `agentguard-gateway` | `oidc`: agents authenticate with client-credentials tokens from `OIDC_ISSUER` carrying this audience, and `x-workload-identity` is ignored. `header` is for dev and tests only |
+| `AGENTGUARD_TOKEN_URL` / `AGENTGUARD_CLIENT_ID` / `AGENTGUARD_CLIENT_SECRET` | unset | Agent side: when set, the SDK (and the bundled agents) fetch and refresh tokens instead of sending the dev header |
 | `CONSOLE_STATIC_TOKENS` | `true` | Static console tokens (dev / break-glass). Set `false` in production |
 | `ANOMALY_MODEL_PATH` | `models/anomaly.joblib` | Where the trained anomaly model is written and read |
 | `GEMINI_API_KEY` | unset | For the Gemini support agent and the live red-team evaluation (default provider). `GEMINI_MODEL` picks the model |

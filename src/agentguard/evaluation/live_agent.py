@@ -134,7 +134,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     runner, workload_identity = _runner(args.provider)
-    tools = GatewayTools(AgentGuardClient(args.gateway, workload_identity), tenant_id=args.tenant, environment="dev")
+    tools = GatewayTools(AgentGuardClient.from_env(args.gateway, workload_identity), tenant_id=args.tenant, environment="dev")
     report = evaluate(
         runner, tools,
         attack_tickets=[t for t in args.tickets.split(",") if t],

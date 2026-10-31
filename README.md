@@ -21,7 +21,7 @@ python -m agentguard.sdk.demo_traffic --rounds 3  # synthetic traffic through th
 
 Open http://localhost:8080 and choose **Continue with single sign-on**. Keycloak runs a synthetic dev realm: `olivia` (operator), `dana` (support lead for tenant-a, can approve refunds) or `sam` (read-only viewer), password `dev-only-password`. Dev tokens (`dev-only-operator-token`, `dev-only-console-dana`, `dev-only-console-sam`) also work.
 
-Kubernetes: see [deploy/helm/README.md](deploy/helm/README.md).
+Production: [deploy/vm/README.md](deploy/vm/README.md) runs it on one free cloud VM (k3s, HTTPS, Postgres, Keycloak, token-authenticated agents, no demo data). For an existing cluster, see [deploy/helm/README.md](deploy/helm/README.md).
 
 ## Measured results
 

@@ -41,6 +41,9 @@ spec:
           command: ["uvicorn", "helpdesk.app:app", "--host", "0.0.0.0", "--port", "8200"]
           ports:
             - { name: http, containerPort: 8200 }
+          env:
+            - name: ENVIRONMENT
+              value: {{ .Values.environment | quote }}
           envFrom:
             # HELPDESK_DATABASE_URL and HELPDESK_SCOPE_TOKENS.
             - secretRef: { name: {{ .Values.helpdesk.existingSecret }} }

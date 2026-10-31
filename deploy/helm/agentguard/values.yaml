@@ -45,6 +45,15 @@ gateway:
   agentNamespaceSelector:
     matchLabels:
       agentguard.io/agents: "true"
+  # Public HTTPS entry for agents outside the cluster. Only the agent API is routed
+  # (/v1/tool-calls, /v1/executions); the console API stays behind the console.
+  ingress:
+    enabled: false
+    className: nginx
+    host: agents.agentguard.example.com
+    tls:
+      secretName: agentguard-gateway-tls
+    annotations: {}
   extraEnv: {}
 
 broker:
@@ -82,6 +91,11 @@ auth:
     allowedRoles: "operator,viewer,support-lead"
     # Origin the browser talks to for sign-in (added to the console CSP).
     browserOrigin: "https://sso.example.com"
+  # How agents prove who they are. "oidc": each agent is a confidential OAuth client and sends a
+  # client-credentials access token (audience agentAudience); its client id is its identity.
+  # "header" trusts x-workload-identity and is only for dev or behind an mTLS mesh that sets it.
+  agentAuth: oidc
+  agentAudience: agentguard-gateway
   # Static console tokens are for local dev and break-glass; keep them off in production.
   staticTokens: false
   # Optional Secret with OPERATOR_TOKEN and/or CONSOLE_PRINCIPALS, for break-glass access.
@@ -116,6 +130,9 @@ anomalyModel:
     hours: 24
   storage:
     size: 1Gi
+    # ReadWriteMany lets gateway pods on different nodes share the model. On a single node
+    # (k3s, local-path storage) ReadWriteOnce is enough and is all local-path supports.
+    accessMode: ReadWriteMany
     storageClassName: ""
 
 observability:
@@ -129,6 +146,8 @@ networkPolicies:
       kubernetes.io/metadata.name: kube-system
   # Where the gateway fetches the IdP's signing keys and OTLP traces go.
   idpEgressCIDR: 0.0.0.0/0
+  # Extra egress rules for the gateway, e.g. to an identity provider running in the cluster.
+  gatewayExtraEgress: []
 
 podSecurityContext:
   runAsNonRoot: true

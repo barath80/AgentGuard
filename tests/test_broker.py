@@ -142,3 +142,14 @@ def test_target_system_dedupes_on_execution_id_not_the_agents_key(session: Sessi
     )
     assert first.result["amount"] == 20
     assert second.result["amount"] == 30
+
+
+def test_production_never_falls_back_to_the_public_dev_credential(monkeypatch):
+    from agentguard.broker.credentials import MissingCredential
+
+    monkeypatch.delenv("AGENTGUARD_CRED_BILLING_REFUND", raising=False)
+    monkeypatch.setattr(settings, "environment", "production")
+    with pytest.raises(MissingCredential):
+        credential_for_scope("billing:refund")
+    monkeypatch.setenv("AGENTGUARD_CRED_BILLING_REFUND", "from-the-secrets-manager")
+    assert credential_for_scope("billing:refund") == "from-the-secrets-manager"
