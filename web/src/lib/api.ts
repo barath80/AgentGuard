@@ -260,6 +260,15 @@ export interface RiskReport {
     } | null;
   };
   agents: AgentRisk[];
+  drift?: DriftReport;
+}
+
+export interface DriftReport {
+  status: "stable" | "moderate" | "drifted" | "insufficient_data" | "unavailable";
+  windows?: number;
+  max_psi?: number;
+  min_windows?: number;
+  features?: { feature: string; psi: number; train_mean: number; live_mean: number }[];
 }
 
 export class ApiError extends Error {
@@ -340,6 +349,27 @@ export interface AgentSpec {
   daily_spend_limit: number | null;
 }
 
+export interface ShadowPolicyInfo {
+  id: string;
+  description: string | null;
+  rules: Rule[];
+  started_by: string;
+  started_at: string | null;
+  stopped_by: string | null;
+  stopped_at: string | null;
+}
+
+export interface ShadowReport {
+  shadow: ShadowPolicyInfo | null;
+  running?: boolean;
+  compared?: number;
+  agreement?: number | null;
+  looser?: number;
+  stricter?: number;
+  matrix?: { live: Decision; shadow: Decision; calls: number }[];
+  differences?: (ExecutionSummary & { shadow_decision: Decision; direction: "looser" | "stricter" })[];
+}
+
 export interface PublishResult {
   id: string;
   version: number;
@@ -408,6 +438,10 @@ export const api = {
   policies: () => request<{ versions: PolicyVersion[]; proposed: ProposedPolicy[] }>("/v1/console/policies"),
   simulate: (policy: unknown) =>
     request<SimulationReport>("/v1/console/simulations", { method: "POST", body: JSON.stringify(policy) }),
+  shadow: () => request<ShadowReport>("/v1/console/shadow"),
+  startShadow: (body: { description?: string; rules: Rule[] }) =>
+    request<ShadowPolicyInfo>("/v1/console/shadow", { method: "POST", body: JSON.stringify(body) }),
+  stopShadow: () => request<ShadowPolicyInfo>("/v1/console/shadow", { method: "DELETE" }),
   publishPolicy: (body: { description?: string; rules: Rule[]; acknowledge_loosening: boolean; reason?: string }) =>
     request<PublishResult>("/v1/console/policies", { method: "POST", body: JSON.stringify(body) }),
   replay: () => request<ReplayReport>("/v1/console/replay", { method: "POST" }),

@@ -58,12 +58,32 @@ services:
       OIDC_ISSUER: http://localhost:8081/realms/agentguard
       OIDC_JWKS_URL: http://keycloak:8080/realms/agentguard/protocol/openid-connect/certs
       BROKER_SERVICE_TOKEN: ${BROKER_SERVICE_TOKEN:-dev-only-broker-service-token}
-    ports:
-      - "8000:8000"
+      # Each replica gets its own pool; replicas × (pool + overflow) must fit Postgres max_connections.
+      DB_POOL_SIZE: 5
+      DB_MAX_OVERFLOW: 5
+    # Stateless replicas behind gateway-lb; scale with GATEWAY_REPLICAS or `--scale app=N`.
+    deploy:
+      replicas: ${GATEWAY_REPLICAS:-2}
     depends_on:
       migrate:
         condition: service_completed_successfully
       redis:
+        condition: service_healthy
+
+  # Load balancer: the only way in to the gateway replicas (agents and the console both use it).
+  gateway-lb:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./deploy/nginx/gateway-lb.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8000/lb-health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    depends_on:
+      app:
         condition: service_healthy
 
   # The only service given target credentials, and the only one that talks to the helpdesk.
@@ -124,12 +144,12 @@ services:
   console:
     build: ./web
     environment:
-      GATEWAY_UPSTREAM: http://app:8000
+      GATEWAY_UPSTREAM: http://gateway-lb:8000
       OIDC_ORIGIN: http://localhost:8081
     ports:
       - "8080:8080"
     depends_on:
-      app:
+      gateway-lb:
         condition: service_healthy
 
   # Identity provider for console sign-in, with a synthetic dev realm (deploy/keycloak/).

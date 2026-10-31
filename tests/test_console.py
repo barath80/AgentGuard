@@ -322,10 +322,17 @@ def test_risk_endpoint_reports_the_served_models_held_out_evaluation(client, mon
         trained_at="2026-10-30T09:00:00+00:00", windows=900, agents=12, detector_name="ensemble", window_seconds=60.0,
         metrics={"detector": "ensemble", "test_pr_auc": 0.93, "test_unseen_recall": float("nan")},
     )
+    drift = {"status": "drifted", "max_psi": 0.4, "features": [{"feature": "calls", "psi": 0.4}]}
     monkeypatch.setattr(ml, "load", lambda path: served)
-    monkeypatch.setattr(ml, "agent_risk", lambda session, model, hours: [])
+    monkeypatch.setattr(ml, "recent_windows", lambda session, model, hours: [])
+    monkeypatch.setattr(ml, "agent_risk_from_windows", lambda model, windows: [])
+    monkeypatch.setattr(ml, "drift_report", lambda model, windows: drift)
     report = client.get("/v1/console/risk", headers=bearer("ops-token"))
     assert report.status_code == 200  # NaN would make the body invalid JSON
-    model = report.json()["model"]
-    assert (model["detector"], model["window_minutes"]) == ("ensemble", 1.0)
-    assert model["evaluation"] == {"test_pr_auc": 0.93}
+    body = report.json()
+    assert (body["model"]["detector"], body["model"]["window_minutes"]) == ("ensemble", 1.0)
+    assert body["model"]["evaluation"] == {"test_pr_auc": 0.93}
+    assert body["drift"] == drift
+    # Fleet-wide feature detail is for all-tenant readers; a tenant-scoped one sees only the status.
+    scoped = client.get("/v1/console/risk", headers=bearer("lead-a-token")).json()
+    assert scoped["drift"] == {"status": "drifted"}

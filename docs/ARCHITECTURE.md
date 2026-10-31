@@ -90,6 +90,8 @@ The console is a separate front door for people: it never exposes agent endpoint
 
 ## Deployed topology
 
+Agents and the console reach the gateway through a load balancer (`gateway-lb` in Compose, a Service in Kubernetes). The gateway is stateless: decisions, approvals, rate limits, budgets and the audit trail are all in Postgres, and per-agent checks take a row lock there, so any replica can serve any call (docs/PERFORMANCE.md).
+
 ```
  agents ──/v1/tool-calls──► gateway ──(service token)──► broker ──(scoped creds, verified tenant)──► helpdesk
                               │  ▲                          │                                          │
@@ -104,3 +106,17 @@ The console is a separate front door for people: it never exposes agent endpoint
 - **Anomaly model** trains nightly from traces over a read-only connection and is read by the console only. Nothing on the enforcement path consults it.
 
 Compose (`docker-compose.yml`) and the Helm chart (`deploy/helm/agentguard`) run this same topology; in Kubernetes, network policies make the arrows above the only allowed paths.
+
+## Policy shadow mode
+
+A proposed policy can run beside the live one (`agentguard.policy.shadow`, started from the console's simulation lab). For every call the live policy evaluates, the gateway also evaluates the shadow's rules (a pure function, cached) and stores the result next to the real decision (`executions.shadow_decision`), in the same transaction. The shadow is observational by construction:
+- it runs after the live decision exists;
+- its errors are swallowed;
+- nothing reads `shadow_decision` on the enforcement path.
+
+The console's shadow report gives the agreement rate, and every call it would have decided differently, split into "looser" (security) and "stricter" (blocks work). That complements counterfactual simulation, which replays *recorded* history: shadow mode covers traffic as it arrives.
+
+## Model drift
+
+The anomaly model stores the distribution of its training windows (per-feature decile bins). The console and `python -m agentguard.ml.model drift` compare recent windows against it with the Population Stability Index. Drift doesn't mean an attack; it means the model's idea of normal is going stale and its held-out scores no longer describe it. The Kubernetes CronJob runs this check and fails on drift, rather than retraining blindly: a new model goes through the notebook's evaluation before it replaces the served one.
+

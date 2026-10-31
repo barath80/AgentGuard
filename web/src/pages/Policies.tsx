@@ -3,6 +3,7 @@ import clsx from "clsx";
 import {
   ArrowRight,
   CheckCircle2,
+  Eye,
   FlaskConical,
   History,
   Lock,
@@ -15,6 +16,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
+import { ShadowCard } from "../components/ShadowCard";
 import { Badge, Button, Card, DecisionBadge, ErrorState, PageHeader, Skeleton } from "../components/ui";
 import { api, type PolicyVersion, type ProposedPolicy, type Rule, type SimulationReport } from "../lib/api";
 import { describeMatch, formatDateTime, formatPercent } from "../lib/format";
@@ -297,16 +299,45 @@ function PublishPanel({
   );
 }
 
+function ShadowStart({ policy }: { policy: { description?: string; rules: Rule[] } }) {
+  const queryClient = useQueryClient();
+  const start = useMutation({
+    mutationFn: () => api.startShadow({ description: policy.description, rules: policy.rules }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["shadow"] }),
+  });
+  return (
+    <div className="mt-3 rounded-xl border border-dashed border-line-strong p-4">
+      <p className="font-medium text-ink">Or watch it on live traffic first</p>
+      <p className="mt-1 text-[13px] text-ink-3">
+        Shadow mode evaluates these rules beside the live policy on every new call and records where they'd differ. Nothing
+        changes for agents.
+      </p>
+      {start.error && <p role="alert" className="mt-2 text-[13px] text-critical-ink">{start.error.message}</p>}
+      {start.isSuccess ? (
+        <p role="status" className="mt-3 flex items-center gap-1.5 text-[13px] text-good-ink">
+          <Eye aria-hidden className="size-4" /> Running in shadow. Results build up under Shadow mode below.
+        </p>
+      ) : (
+        <Button icon={Eye} className="mt-3" loading={start.isPending} onClick={() => start.mutate()}>
+          Run in shadow
+        </Button>
+      )}
+    </div>
+  );
+}
+
 function SimulationLab({
   active,
   proposed,
   canPublish,
   nextVersion,
+  injected,
 }: {
   active?: PolicyVersion;
   proposed: ProposedPolicy[];
   canPublish: boolean;
   nextVersion: number;
+  injected?: { text: string; nonce: number };
 }) {
   const options = useMemo(
     () => [
@@ -318,8 +349,9 @@ function SimulationLab({
       ...(active
         ? [{ key: "active", label: `Draft from active v${active.version}`, text: toEditable(active.version + 1, active.rules) }]
         : []),
+      ...(injected ? [{ key: "shadow", label: "From shadow mode", text: injected.text }] : []),
     ],
-    [active, proposed],
+    [active, proposed, injected],
   );
   const [source, setSource] = useState("");
   const [text, setText] = useState("");
@@ -327,6 +359,15 @@ function SimulationLab({
   // Publishing is offered only for exactly the text that was simulated.
   const [simulatedText, setSimulatedText] = useState<string | null>(null);
   const [published, setPublished] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (injected) {
+      setSource("shadow");
+      setText(injected.text);
+      simulate.reset();
+    }
+    // Runs once per injected nonce, not on every render.
+  }, [injected?.nonce]);
 
   useEffect(() => {
     if (!source && options.length) {
@@ -419,15 +460,18 @@ function SimulationLab({
               <SimulationResult report={simulate.data} />
               {canPublish && published === null && (
                 simulatedText === text ? (
-                  <PublishPanel
-                    report={simulate.data}
-                    policy={parsed.value as { description?: string; rules: Rule[] }}
-                    nextVersion={nextVersion}
-                    onPublished={(version) => {
-                      setPublished(version);
-                      simulate.reset();
-                    }}
-                  />
+                  <>
+                    <PublishPanel
+                      report={simulate.data}
+                      policy={parsed.value as { description?: string; rules: Rule[] }}
+                      nextVersion={nextVersion}
+                      onPublished={(version) => {
+                        setPublished(version);
+                        simulate.reset();
+                      }}
+                    />
+                    <ShadowStart policy={parsed.value as { description?: string; rules: Rule[] }} />
+                  </>
                 ) : (
                   <p className="mt-5 text-[13px] text-ink-3">The policy changed since this simulation. Run it again to publish.</p>
                 )
@@ -516,6 +560,7 @@ function ReplayCard() {
 
 export function Policies() {
   const me = useMe();
+  const [injected, setInjected] = useState<{ text: string; nonce: number } | undefined>();
   const policies = useQuery({ queryKey: ["policies"], queryFn: api.policies });
   const versions = policies.data?.versions ?? [];
   const active = versions.find((v) => v.is_active);
@@ -568,6 +613,7 @@ export function Policies() {
               proposed={policies.data.proposed}
               canPublish={me.can_operate}
               nextVersion={Math.max(0, ...versions.map((v) => v.version)) + 1}
+              injected={injected}
             />
           ) : (
             <Skeleton className="h-96 rounded-xl" />
@@ -579,6 +625,15 @@ export function Policies() {
               Simulation and replay cover every tenant's traffic, so they need all-tenant read access.
             </div>
           </Card>
+        )}
+        {me.reads_all_tenants && (
+          <ShadowCard
+            canOperate={me.can_operate}
+            onLoadRules={(rules, description) => {
+              setInjected({ text: toEditable(Math.max(0, ...versions.map((v) => v.version)) + 1, rules, description), nonce: Date.now() });
+              window.scrollTo({ top: 0, behavior: "smooth" });
+            }}
+          />
         )}
       </div>
     </>

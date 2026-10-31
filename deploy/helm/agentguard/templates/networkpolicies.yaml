@@ -151,7 +151,7 @@ spec:
         - { protocol: TCP, port: 8000 }
 {{- end }}
 ---
-# Migration and training jobs: database only.
+# Migration and drift-check jobs: database only.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -160,7 +160,7 @@ spec:
   podSelector:
     matchExpressions:
       - { key: app.kubernetes.io/instance, operator: In, values: [{{ .Release.Name | quote }}] }
-      - { key: app.kubernetes.io/component, operator: In, values: [migrate, train] }
+      - { key: app.kubernetes.io/component, operator: In, values: [migrate, drift-check] }
   policyTypes: [Egress]
   egress:
     - to:

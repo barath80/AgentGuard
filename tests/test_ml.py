@@ -139,3 +139,30 @@ def test_supervised_detectors_need_labels_and_keep_their_settings(session, tmp_p
 def test_windows_can_be_any_length(session):
     _normal_history(session, 10, random.Random(4))
     assert len(build_windows(session, window=timedelta(minutes=1))) >= len(build_windows(session))
+
+
+def test_drift_report_tells_matching_traffic_from_shifted_traffic():
+    import numpy as np
+
+    from agentguard.ml.features import Window
+    from agentguard.ml.model import drift_report
+
+    rng = np.random.default_rng(0)
+
+    def windows(calls_mean: float, n: int) -> list:
+        out = []
+        for i in range(n):
+            calls = max(1, int(rng.normal(calls_mean, 2)))
+            values = dict.fromkeys(FEATURES, 0.0) | {"calls": calls, "burst_calls": max(1, calls // 3),
+                                                      "distinct_targets": calls, "distinct_tools": 1}
+            out.append(Window(agent_id=f"a{i % 5}", start=datetime.now(UTC), values=values))
+        return out
+
+    model = train(windows(10, 300), min_windows=50)
+    assert drift_report(model, windows(10, 200))["status"] == "stable"
+    shifted = drift_report(model, windows(40, 200))
+    assert shifted["status"] == "drifted" and shifted["max_psi"] >= 0.25
+    assert shifted["features"][0]["feature"] in {"calls", "burst_calls", "distinct_targets"}
+    assert drift_report(model, windows(10, 5))["status"] == "insufficient_data"
+    model.reference = None
+    assert drift_report(model, windows(10, 200))["status"] == "unavailable"

@@ -42,7 +42,7 @@ spec:
       volumes:
         {{- include "agentguard.tmpVolume" . | nindent 8 }}
 ---
-# Trained anomaly model artifacts: written by the training CronJob, read by the gateway.
+# Trained anomaly model artifact: placed here after evaluation in the notebook, read by the gateway.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -57,17 +57,17 @@ spec:
   resources:
     requests:
       storage: {{ .Values.anomalyModel.storage.size }}
-{{- if .Values.anomalyModel.training.enabled }}
+{{- if .Values.anomalyModel.driftCheck.enabled }}
 ---
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: {{ $fullname }}-train-anomaly
+  name: {{ $fullname }}-anomaly-drift
   labels:
     {{- include "agentguard.labels" . | nindent 4 }}
-    app.kubernetes.io/component: train
+    app.kubernetes.io/component: drift-check
 spec:
-  schedule: {{ .Values.anomalyModel.training.schedule | quote }}
+  schedule: {{ .Values.anomalyModel.driftCheck.schedule | quote }}
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
@@ -78,23 +78,25 @@ spec:
         metadata:
           labels:
             {{- include "agentguard.labels" . | nindent 12 }}
-            app.kubernetes.io/component: train
+            app.kubernetes.io/component: drift-check
         spec:
           restartPolicy: Never
           automountServiceAccountToken: false
           securityContext: {{- toYaml .Values.podSecurityContext | nindent 12 }}
           containers:
-            - name: train
+            - name: drift-check
               image: {{ include "agentguard.image" . }}
-              # Reads traces over a database-enforced read-only connection; refuses with too little history.
+              # Compares recent traffic with the served model's training data (read-only). Exits non-zero
+              # when it has drifted, so the failed Job is the alert. It doesn't retrain: an unevaluated
+              # model must not silently replace one evaluated in the notebook.
               command: ["python", "-m", "agentguard.ml.model", "--model-path", "/models/anomaly.joblib",
-                        "train", "--min-windows", "{{ .Values.anomalyModel.training.minWindows }}"]
+                        "drift", "--hours", "{{ .Values.anomalyModel.driftCheck.hours }}"]
               env:
                 - name: DATABASE_URL
                   valueFrom: { secretKeyRef: { name: {{ .Values.database.existingSecret }}, key: DATABASE_URL } }
               securityContext: {{- toYaml .Values.containerSecurityContext | nindent 16 }}
               volumeMounts:
-                - { name: models, mountPath: /models }
+                - { name: models, mountPath: /models, readOnly: true }
                 - { name: tmp, mountPath: /tmp }
           volumes:
             - name: models

@@ -143,6 +143,8 @@ python -m agentguard.ml.model score
 
 It learns "normal" from whatever traffic it's trained on, so train it on a period you trust.
 
+**Check for drift**: `python -m agentguard.ml.model drift --hours 24` compares recent traffic with the served model's training data (Population Stability Index per feature) and exits with status 3 if it has drifted. The console's model card shows the same check.
+
 ## Option B — Docker Compose (Postgres + Redis + app)
 
 Matches the target architecture in `docs/ARCHITECTURE.md`.
@@ -171,6 +173,10 @@ Copy `.env.example` to `.env` and adjust if needed — defaults work for both op
 | `KILL_SWITCH` | `false` | `true` denies every tool call for every agent (needs a restart; to stop one agent immediately, suspend it instead — see below) |
 | `ALLOW_READS_WHEN_POLICY_UNAVAILABLE` | `false` | The only fail-open: if policy evaluation errors, still allow `read`-class tools. Writes are always denied |
 | `BROKER_TIMEOUT_SECONDS` | `5` | Per-call deadline for tool execution |
+| `DB_POOL_SIZE` / `DB_MAX_OVERFLOW` | `5` / `10` | Database connections per process (Postgres). Replicas × workers × (pool + overflow) must fit `max_connections` |
+| `REQUEST_THREADS` | anyio default (40) | Threads for synchronous request handlers |
+| `CONSOLE_CACHE_SECONDS` | `10` | How long the console may reuse its full-trace anomaly report |
+| `SHADOW_CACHE_SECONDS` | `5` | How long a gateway process reuses its view of the active shadow policy (observational only) |
 | `CLOCK_SKEW_TOLERANCE_SECONDS` | `1.0` | How far the broker's clock may disagree with the gateway's before a `clock_skew` event is recorded |
 | `BREAKER_THRESHOLD` / `BREAKER_WINDOW_SECONDS` | `5` / `300` | Denials within the window that open an agent's circuit |
 | `OPERATOR_TOKEN` | unset (`dev-only-operator-token` in `.env.example`) | Required for `/v1/stats`; unset disables the endpoint. Also signs a read-all `operator` principal into the console |
@@ -199,6 +205,15 @@ TEST_DATABASE_URL=postgresql+psycopg://agentguard:agentguard@localhost:5432/agen
 ```
 
 Without Docker, `pip install pgserver` gives you a local Postgres binary to run this against.
+
+## Load testing and scale-out
+
+```
+python -m agentguard.evaluation.loadtest --base-url http://127.0.0.1:8000 --operator-token dev-only-operator-token \
+    --agents 20 --concurrency 32 --duration 60 --json load.json
+```
+
+It registers its own load agents through the console API and drives real tool calls through the full path, so point it at a dev or staging stack only. With Compose, scale the gateway behind the load balancer with `GATEWAY_REPLICAS=4 docker compose up -d`. Uvicorn's `--workers N` does the same on one host. Before scaling, read [docs/PERFORMANCE.md](docs/PERFORMANCE.md) on connection budgets (`DB_POOL_SIZE`, `DB_MAX_OVERFLOW`, `REQUEST_THREADS`).
 
 ## Database migrations
 

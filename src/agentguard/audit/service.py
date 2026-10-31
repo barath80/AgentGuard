@@ -13,6 +13,9 @@ from sqlalchemy.orm import Session
 from agentguard.models import AuditEvent
 
 
-def record(session: Session, execution_id: str, event_type: str, payload: dict[str, Any]) -> None:
+def record(session: Session, execution_id: str, event_type: str, payload: dict[str, Any], *, commit: bool = True) -> None:
+    """Append an event. With commit=False it joins the caller's transaction, so a state
+    change and the event describing it are written together or not at all."""
     session.add(AuditEvent(execution_id=execution_id, event_type=event_type, payload=payload))
-    session.commit()
+    if commit:
+        session.commit()

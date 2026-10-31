@@ -18,6 +18,7 @@ def _no_console_cache(monkeypatch):
     from agentguard.config import settings
 
     monkeypatch.setattr(settings, "console_cache_seconds", 0)
+    monkeypatch.setattr(settings, "shadow_cache_seconds", 0)
 
 
 @pytest.fixture()

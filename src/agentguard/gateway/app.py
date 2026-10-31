@@ -2,12 +2,14 @@ import hmac
 from contextlib import asynccontextmanager
 from typing import Any
 
+import anyio.to_thread
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import RedirectResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from agentguard.audit.stats import compute_stats
+from agentguard.broker import service as broker_service
 from agentguard.config import settings
 from agentguard.console.routes import router as console_router
 from agentguard.db import Base, SessionLocal, engine, get_session
@@ -32,6 +34,10 @@ async def _lifespan(_app: FastAPI):
     from agentguard.policy.seed import seed
 
     configure_telemetry()
+    if settings.request_threads:
+        anyio.to_thread.current_default_thread_limiter().total_tokens = settings.request_threads
+    if settings.broker_url:
+        broker_service._remote()  # build the pooled client now, not inside the first burst
     Base.metadata.create_all(bind=engine)
     with SessionLocal() as session:
         seed(session)
@@ -70,9 +76,16 @@ def require_identity(
     x_workload_identity: str | None = Header(default=None),
 ) -> ResolvedIdentity:
     try:
-        return resolve_identity(session, x_workload_identity)
+        identity = resolve_identity(session, x_workload_identity)
     except IdentityError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
+    finally:
+        # End the lookup's transaction now. The endpoint runs on another hop through the thread
+        # pool; holding a pooled connection across that hop deadlocks once concurrent requests
+        # outnumber the threads: every thread waits for a connection held by a request that is
+        # waiting for a thread (docs/PERFORMANCE.md).
+        session.commit()
+    return identity
 
 
 @app.post("/v1/tool-calls", response_model=ToolCallResponse)

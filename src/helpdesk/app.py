@@ -14,7 +14,7 @@ import json
 import logging
 import os
 import time
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -33,9 +33,17 @@ DATABASE_URL = os.environ.get("HELPDESK_DATABASE_URL", "sqlite:///./helpdesk.db"
 # Test hook: delay writes so callers' timeouts can be exercised against a real server.
 WRITE_DELAY_SECONDS = float(os.environ.get("HELPDESK_WRITE_DELAY_SECONDS", "0"))
 
-_connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
-engine = create_engine(DATABASE_URL, connect_args=_connect_args)
-SessionLocal = sessionmaker(bind=engine, autoflush=False)
+if DATABASE_URL.startswith("sqlite"):
+    engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+else:
+    engine = create_engine(
+        DATABASE_URL, pool_pre_ping=True,
+        pool_size=int(os.environ.get("HELPDESK_DB_POOL_SIZE", "5")),
+        max_overflow=int(os.environ.get("HELPDESK_DB_MAX_OVERFLOW", "10")),
+    )
+# Committed objects stay readable without reopening a transaction, so a finished request holds
+# no pooled connection while it waits for dependency cleanup.
+SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 
 def _hash(token: str) -> str:
@@ -50,7 +58,9 @@ def scope_token_hashes() -> dict[str, str]:
     return {scope: _hash(f"dev-only-{scope}") for scope in SCOPES}
 
 
-def get_session() -> Iterator[Session]:
+async def get_session() -> AsyncIterator[Session]:
+    """Async so its cleanup runs on the event loop, not the request thread pool, which a
+    saturated pool would otherwise deadlock (same reasoning as agentguard.db.get_session)."""
     session = SessionLocal()
     try:
         yield session

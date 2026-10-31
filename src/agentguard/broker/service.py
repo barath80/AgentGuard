@@ -11,7 +11,6 @@ Two deployment modes, same interface:
 """
 
 import concurrent.futures
-import functools
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -21,6 +20,7 @@ import httpx
 
 from agentguard.broker.credentials import credential_for_scope
 from agentguard.broker.executors import Executor, TargetRejected, registry
+from agentguard.broker.http import pooled_client
 from agentguard.config import settings
 
 __all__ = ["BrokerTimeoutError", "Reconciliation", "TargetRejected", "execute", "reconcile"]
@@ -87,14 +87,8 @@ def _broker_clock(response: httpx.Response) -> tuple[datetime, datetime] | None:
         return None
 
 
-@functools.cache
-def _pool(base_url: str) -> httpx.Client:
-    # Shared and pooled: building an httpx client per call costs more than the call itself.
-    return httpx.Client(base_url=base_url)
-
-
 def _remote() -> httpx.Client:
-    return _pool(settings.broker_url)
+    return pooled_client(settings.broker_url)
 
 
 def _auth() -> dict[str, str]:

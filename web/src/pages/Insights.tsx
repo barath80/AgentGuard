@@ -1,11 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
 import clsx from "clsx";
 import { useState } from "react";
-import { Activity, BrainCircuit, ChevronDown, Clock, FlaskConical, Gauge, ReceiptText, Repeat, ShieldCheck, Timer, UserCog, Wallet, Zap, type LucideIcon } from "lucide-react";
+import { Activity, BrainCircuit, CheckCircle2, ChevronDown, Clock, FlaskConical, Gauge, ReceiptText, Repeat, ShieldCheck, Timer, TrendingUp, TriangleAlert, UserCog, Wallet, Zap, type LucideIcon } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Badge, Button, Card, EmptyState, ErrorState, PageHeader, Skeleton } from "../components/ui";
 import { WorkflowsCard } from "../components/WorkflowsCard";
-import { api, type AgentRisk, type Finding, type RiskReport } from "../lib/api";
+import { api, type AgentRisk, type DriftReport, type Finding, type RiskReport } from "../lib/api";
 import { formatDateTime, formatPercent, timeAgo } from "../lib/format";
 
 const KIND: Record<string, { icon: LucideIcon; title: string; tone: "critical" | "warning" | "neutral"; why: string }> = {
@@ -155,7 +155,25 @@ function ModelStat({ label, value, hint }: { label: string; value: string; hint?
 }
 
 /** What model is serving risk scores, and how it did on traffic it never trained on. */
-function ModelSummary({ model }: { model: NonNullable<RiskReport["model"]> }) {
+function DriftLine({ drift }: { drift: DriftReport }) {
+  const named = (drift.features ?? []).map((f) => `${FEATURE_LABEL[f.feature] ?? f.feature} (PSI ${f.psi.toFixed(2)})`).join(", ");
+  const view = {
+    stable: { icon: CheckCircle2, className: "text-good-ink", text: `Live traffic still matches the training data${drift.max_psi !== undefined ? ` (largest PSI ${drift.max_psi.toFixed(2)})` : ""}.` },
+    moderate: { icon: TrendingUp, className: "text-warning-ink", text: `Traffic is shifting: ${named}. Worth watching; retrain if it keeps moving.` },
+    drifted: { icon: TriangleAlert, className: "text-critical-ink", text: `Traffic has drifted from the training data: ${named}. Retrain and re-evaluate in the notebook; until then the scores above describe older traffic.` },
+    insufficient_data: { icon: Clock, className: "text-ink-3", text: `Not enough recent traffic to check for drift (${drift.windows ?? 0} of ${drift.min_windows ?? 200} windows needed for a reliable check).` },
+    unavailable: { icon: Clock, className: "text-ink-3", text: "This model predates drift checks; retrain it to enable them." },
+  }[drift.status];
+  if (!view) return null;
+  return (
+    <p className={`mt-2 flex items-start gap-1.5 text-xs ${view.className}`}>
+      <view.icon aria-hidden className="mt-px size-3.5 shrink-0" />
+      <span>{view.text}</span>
+    </p>
+  );
+}
+
+function ModelSummary({ model, drift }: { model: NonNullable<RiskReport["model"]>; drift?: DriftReport }) {
   const e = model.evaluation;
   return (
     <div className="mb-5">
@@ -190,6 +208,7 @@ function ModelSummary({ model }: { model: NonNullable<RiskReport["model"]> }) {
           period, through the same scoring the console uses.
         </p>
       )}
+      {drift && <DriftLine drift={drift} />}
     </div>
   );
 }
@@ -221,7 +240,7 @@ function RiskCard() {
         </p>
       ) : (
         <>
-          {data.model && <ModelSummary model={data.model} />}
+          {data.model && <ModelSummary model={data.model} drift={data.drift} />}
           {data.agents.length ? (
             <ul className="divide-y divide-line">
               {data.agents.map((row) => (

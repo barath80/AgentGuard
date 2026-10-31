@@ -36,6 +36,11 @@ gateway:
     minReplicas: 2
     maxReplicas: 10
     targetCPUUtilizationPercentage: 70
+  # Database connections per pod. maxReplicas × (size + maxOverflow), plus the broker's, must fit
+  # Postgres max_connections, or put PgBouncer in front: the HPA can multiply this quickly.
+  dbPool:
+    size: 5
+    maxOverflow: 5
   # Pods allowed to call the gateway's agent API (/v1/tool-calls), matched by namespace label.
   agentNamespaceSelector:
     matchLabels:
@@ -103,11 +108,12 @@ helpdesk:
   seedSyntheticData: false
 
 anomalyModel:
-  # Retrain the advisory anomaly model from recorded traces on a schedule.
-  training:
+  # Check daily that live traffic still resembles the served model's training data. A failed Job
+  # means drift: retrain and re-evaluate in notebooks/anomaly_model.ipynb, then replace the model.
+  driftCheck:
     enabled: true
     schedule: "17 3 * * *"
-    minWindows: 200
+    hours: 24
   storage:
     size: 1Gi
     storageClassName: ""

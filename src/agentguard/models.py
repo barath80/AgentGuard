@@ -8,7 +8,17 @@ keep the schema portable between SQLite (tests) and Postgres (runtime).
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from agentguard.db import Base
@@ -111,6 +121,13 @@ class Approval(Base):
 
 class Execution(Base):
     __tablename__ = "executions"
+    __table_args__ = (
+        # The database, not a read-then-insert check, guarantees one execution per agent and key,
+        # even when concurrent requests race across gateway replicas.
+        UniqueConstraint("agent_id", "idempotency_key", name="uq_executions_agent_idempotency"),
+        # Rate limit, budget and breaker checks all filter one agent's recent calls.
+        Index("ix_executions_agent_requested", "agent_id", "requested_at"),
+    )
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
     agent_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
@@ -144,6 +161,10 @@ class Execution(Base):
     # recorded before these were captured; replay falls back to the registry for those.
     agent_risk_category: Mapped[str | None] = mapped_column(String, nullable=True)
     tool_risk_class: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Policy shadow mode: what a proposed policy running alongside the live one would have
+    # decided. Recorded for comparison only; it never affects `decision`.
+    shadow_policy_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    shadow_decision: Mapped[str | None] = mapped_column(String, nullable=True)
     safe_result_ref: Mapped[str | None] = mapped_column(String, nullable=True)
     trace_complete: Mapped[bool] = mapped_column(Boolean, default=False)
 
@@ -188,6 +209,25 @@ class EvaluationCase(Base):
     scenario: Mapped[dict] = mapped_column(JSON, default=dict)
     expected_decision: Mapped[str] = mapped_column(String, nullable=False)
     expected_outcome: Mapped[str] = mapped_column(String, nullable=False, default="")
+
+
+class ShadowPolicy(Base):
+    """A proposed policy evaluated silently next to the live one on real traffic.
+
+    Its rules never decide anything: each call the live policy evaluates also gets the
+    shadow's decision recorded beside it, so operators can see exactly which live calls it
+    would have handled differently before publishing it. One runs at a time.
+    """
+
+    __tablename__ = "shadow_policies"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    description: Mapped[str | None] = mapped_column(String, nullable=True)
+    rules: Mapped[list] = mapped_column(JSON, nullable=False)
+    started_by: Mapped[str] = mapped_column(String, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    stopped_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class OperatorAction(Base):

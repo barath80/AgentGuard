@@ -146,6 +146,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Compose file is valid
+        run: docker compose config --quiet
+
       - name: Build gateway image
         run: docker build -t agentguard:ci .
 

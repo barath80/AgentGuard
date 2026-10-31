@@ -11,7 +11,6 @@ actually serves them is the configured backend:
   the test suite and the evaluation runner so they need no running services.
 """
 
-import functools
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -19,6 +18,7 @@ from typing import Any
 import httpx
 
 from agentguard import mock_systems
+from agentguard.broker.http import pooled_client
 from agentguard.config import settings
 
 # (args, credential, idempotency_key, tenant_id) -> result
@@ -71,16 +71,9 @@ EXECUTORS: dict[str, Executor] = {
 # --- Real helpdesk service ---------------------------------------------------------
 
 
-@functools.cache
-def _pool(base_url: str) -> httpx.Client:
-    """One pooled client per target. Building a client is expensive (hundreds of ms for
-    the TLS context on some platforms), so per-call clients would dominate latency.
-    Credentials never live on the shared client: they go on each request."""
-    return httpx.Client(base_url=base_url, timeout=settings.broker_timeout_seconds + 5)
-
-
 def _http() -> httpx.Client:
-    return _pool(settings.helpdesk_url)
+    # Shared and pooled (agentguard.broker.http); credentials go on each request, never on the client.
+    return pooled_client(settings.helpdesk_url, timeout=settings.broker_timeout_seconds + 5)
 
 
 def _headers(credential: str, tenant_id: str | None = None, key: str | None = None) -> dict[str, str]:

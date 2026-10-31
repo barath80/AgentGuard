@@ -1,6 +1,6 @@
 """HTTP routes for the operator console, mounted at /v1/console."""
 
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
@@ -19,8 +19,9 @@ router = APIRouter(prefix="/v1/console", tags=["console"])
 _read_only_factory: sessionmaker | None = None
 
 
-def get_read_only_session() -> Iterator[Session]:
-    """For replay, simulation and anomaly detection: the database refuses writes on this session."""
+async def get_read_only_session() -> AsyncIterator[Session]:
+    """For replay, simulation and anomaly detection: the database refuses writes on this session.
+    Async so cleanup doesn't need the request thread pool (see agentguard.db.get_session)."""
     global _read_only_factory
     if _read_only_factory is None:
         _read_only_factory = sessionmaker(bind=read_only_engine(settings.database_url))
@@ -62,6 +63,11 @@ class PublishRequest(BaseModel):
     rules: list[dict[str, Any]] = Field(min_length=1, max_length=200)
     acknowledge_loosening: bool = False
     reason: str | None = Field(default=None, max_length=1000)
+
+
+class ShadowRequest(BaseModel):
+    description: str | None = Field(default=None, max_length=500)
+    rules: list[dict[str, Any]] = Field(min_length=1, max_length=200)
 
 
 class RegisterAgentRequest(BaseModel):
@@ -228,6 +234,30 @@ def publish_policy(
         service.publish_policy, session, principal, rules, description=request.description,
         acknowledge_loosening=request.acknowledge_loosening, reason=request.reason,
     )
+
+
+@router.get("/shadow")
+def shadow(
+    principal: Principal = Depends(require_principal), session: Session = Depends(get_session)
+) -> dict[str, Any]:
+    return _call(service.shadow_report, session, principal)
+
+
+@router.post("/shadow", status_code=201)
+def start_shadow(
+    request: ShadowRequest,
+    principal: Principal = Depends(require_principal),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    rules = _parse_rules(0, request.rules)
+    return _call(service.start_shadow, session, principal, rules, description=request.description)
+
+
+@router.delete("/shadow")
+def stop_shadow(
+    principal: Principal = Depends(require_principal), session: Session = Depends(get_session)
+) -> dict[str, Any]:
+    return _call(service.stop_shadow, session, principal)
 
 
 @router.post("/replay")

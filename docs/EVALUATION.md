@@ -76,6 +76,39 @@ How to read this:
 - **The robust deviation check was switched off**, decided on validation. With it, false alarms rose from 1.5% to 7.1% and nothing more was caught.
 - **These are scripted attacks in a simulated fleet.** The numbers measure detection of *these* behaviours. Real agents and real attackers will differ, so retrain and re-evaluate on your own traffic before relying on the model. It stays advisory either way: nothing on the enforcement path reads it.
 
+#### Retrained on new attack types (second dataset)
+
+The traffic generator gained four attack types after the first model was trained. Each is made of calls policy allows:
+- **slow scraping:** extra reads spread over a minute, so there's no burst;
+- **ticket flooding:** a burst of ticket creations;
+- **approval fishing:** repeated large refunds that need approval;
+- **split refunds:** one refund cut into pieces under the approval threshold.
+
+Before retraining, the notebook rebuilds the first model's exact setup, trained only on data from before the new attacks existed, and scores it on the new data:
+
+| New attack type | Caught by the first model |
+|---|---|
+| Approval fishing | 100% |
+| Split refunds | 100% |
+| Ticket flooding | 36% |
+| Slow scraping | **17%** |
+
+It flagged 1.1% of normal windows. So it was well calibrated, but slow, spread-out scraping got past it. That's the generalisation gap of any behavioural model, and the reason drift monitoring and retraining exist.
+
+Retrained on both datasets: 2,613 windows, 358 with attacks, 787 attack-signature calls, none unlabelled. The test split has 529 windows, 61 with attacks.
+
+| | Result |
+|---|---|
+| Chosen detector | Random forest (selection score 0.946: validation PR-AUC 0.999, unseen-type recall 0.89) |
+| Test PR-AUC | 1.00 |
+| Precision / recall (console scoring path) | 0.92 / 1.00 |
+| False alarms | 1.1% of normal windows |
+| Recall on attack types left out of training (test) | 0.97 |
+
+The selection changed because the evidence changed. With slow scraping in the data, the ensemble's autoencoder member caught only 9% of it when that type was held out, so the ensemble lost its robustness edge.
+
+The same caveat applies: these are scripted behaviours in a simulated fleet. The numbers describe detection of them, not of attacks in general.
+
 ## CI wiring
 
 The full routine + adversarial suite runs whenever a prompt, model, tool definition, or policy version changes (Phase 2). A change that moves the false-allow rate above 0, or materially regresses task success rate, fails CI.

@@ -10,6 +10,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from agentguard.approval import service as approval_service
@@ -22,6 +23,7 @@ from agentguard.gateway.telemetry import tracer
 from agentguard.gateway.validation import unknown_arg_rejection
 from agentguard.identity.service import ResolvedIdentity
 from agentguard.models import Agent, Approval, Execution, RequestPayload, Tool
+from agentguard.policy import shadow as shadow_policy
 from agentguard.policy.engine import PolicyContext, PolicyDecision, evaluate
 
 log = logging.getLogger(__name__)
@@ -96,6 +98,25 @@ def _submit(
         return deny("environment not approved for this agent")
     if request.resource_tenant_id != identity.tenant_id:
         return deny("tenant mismatch: resource belongs to a different tenant")
+    try:
+        with controls.agent_lock(session, identity.agent_id):
+            return _decide_and_act(session, request, identity, tool, requested_at, deny)
+    except _DuplicateRequest:
+        # A concurrent request with the same key won the race; answer with its execution.
+        session.rollback()
+        existing = (
+            session.query(Execution)
+            .filter(Execution.agent_id == identity.agent_id, Execution.idempotency_key == request.idempotency_key)
+            .one()
+        )
+        return _to_response(existing, reason="duplicate idempotency key — not re-executed")
+
+
+class _DuplicateRequest(Exception):
+    pass
+
+
+def _decide_and_act(session, request, identity, tool, requested_at, deny) -> ToolCallResponse:
     control_reason = controls.pre_policy_denial(session, identity.agent_id, tool, request.args)
     if control_reason:
         return deny(control_reason)
@@ -121,6 +142,8 @@ def _submit(
             return deny("policy unavailable: failing closed")
     else:
         fallback_reason = None
+    # What a shadow policy would have decided, recorded beside the live decision (observational).
+    shadow = None if fallback_reason else shadow_policy.decide(session, ctx)
 
     execution = _record_decision(
         session, request, identity, tool, requested_at,
@@ -128,10 +151,11 @@ def _submit(
         policy_version=policy_decision.policy_version,
         reason=fallback_reason,
         matched_rule_id=policy_decision.matched_rule_id,
+        executing=policy_decision.decision == "allow",
+        shadow=shadow,
     )
 
     if policy_decision.decision == "deny":
-        execution.reason = "denied by policy"
         return _finish_denied(session, execution)
 
     if policy_decision.decision == "approval_required":
@@ -166,7 +190,14 @@ def _record_decision(
     policy_version: int,
     reason: str | None,
     matched_rule_id: str | None = None,
+    executing: bool = False,
+    shadow: tuple[str, str] | None = None,
 ) -> Execution:
+    """Record the decision, its audit event and (for a denial) its outcome in one transaction.
+
+    One commit instead of three per call; and atomic, so a decision can't exist without the
+    audit event that explains it. `executing` marks an allowed call as started in the same commit.
+    """
     execution = Execution(
         agent_id=identity.agent_id,
         tenant_id=identity.tenant_id,
@@ -184,24 +215,33 @@ def _record_decision(
         safe_request_ref=_ref(request.args),
         agent_risk_category=identity.risk_category,
         tool_risk_class=tool.risk_class,
+        shadow_policy_id=shadow[0] if shadow else None,
+        shadow_decision=shadow[1] if shadow else None,
     )
     session.add(execution)
-    session.flush()  # assigns execution.id so RequestPayload can reference it
+    try:
+        session.flush()  # assigns execution.id so RequestPayload can reference it
+    except IntegrityError as exc:
+        raise _DuplicateRequest from exc  # uq_executions_agent_idempotency
     session.add(RequestPayload(execution_id=execution.id, args=request.args))
-    session.commit()
+    if decision == "deny":
+        execution.reason = reason or "denied by policy"
+        execution.outcome = "denied"
+        execution.completed_at = _now()
+        execution.trace_complete = True
+    elif executing:
+        execution.executed_at = _now()
     audit_service.record(
         session, execution.id, "decision_made",
         {"decision": decision, "policy_version": policy_version, "matched_rule_id": matched_rule_id, "reason": reason},
+        commit=False,
     )
+    session.commit()
     return execution
 
 
 def _finish_denied(session: Session, execution: Execution) -> ToolCallResponse:
-    execution.outcome = "denied"
-    execution.completed_at = _now()
-    execution.trace_complete = True
-    session.commit()
-    return _to_response(execution)
+    return _to_response(execution)  # outcome already recorded with the decision
 
 
 def execute_approved(session: Session, execution_id: str, identity: ResolvedIdentity) -> ToolCallResponse:
@@ -271,7 +311,13 @@ def execute_approved(session: Session, execution_id: str, identity: ResolvedIden
 def _execute_and_record(
     session: Session, execution: Execution, tool: Tool, args: dict[str, Any]
 ) -> dict[str, Any] | None:
-    execution.executed_at = _now()
+    if execution.executed_at is None:  # approved calls; immediate ones were marked with their decision
+        execution.executed_at = _now()
+    # Read what the broker call needs, then end the transaction (reading expired attributes after
+    # a commit silently opens a new one). No database connection is held while the tool runs:
+    # otherwise each in-flight call pins a pooled connection for the whole downstream round trip,
+    # and the pool, not the work, caps throughput.
+    executor_ref, execution_id, tenant_id = tool.executor_ref, execution.id, execution.tenant_id
     session.commit()
     broker_clock: list[datetime] = []
     try:
@@ -279,8 +325,8 @@ def _execute_and_record(
             # The execution id, not the agent's key, is what the target system dedupes on:
             # agent keys are only unique per agent, so two agents' keys could collide downstream.
             result = broker_service.execute(
-                tool.executor_ref, args,
-                idempotency_key=execution.id, tenant_id=execution.tenant_id,
+                executor_ref, args,
+                idempotency_key=execution_id, tenant_id=tenant_id,
                 timeout_seconds=settings.broker_timeout_seconds,
                 on_clock=lambda started, finished: broker_clock.extend((started, finished)),
             )
@@ -331,14 +377,21 @@ def _finish_success(session: Session, execution: Execution, result: dict[str, An
     execution.completed_at = _now()
     execution.trace_complete = True
     execution.safe_result_ref = _ref(result)
+    audit_service.record(session, execution.id, "execution_completed", {"result_ref": execution.safe_result_ref},
+                         commit=False)
     session.commit()
-    audit_service.record(session, execution.id, "execution_completed", {"result_ref": execution.safe_result_ref})
     return result
 
 
 def _reconcile(session: Session, execution: Execution, tool: Tool) -> dict[str, Any] | None:
     """Resolve a timed-out execution from the target system's own record (THREAT_MODEL #5)."""
-    reconciliation = broker_service.reconcile(tool.executor_ref, execution.id)
+    try:
+        reconciliation = broker_service.reconcile(tool.executor_ref, execution.id)
+    except Exception as exc:  # noqa: BLE001 - can't reach the broker or target: still unresolved
+        # Never assume the write didn't happen: leave it as an unresolved timeout, which a retry
+        # with the same idempotency key re-checks, instead of failing the request.
+        log.warning("reconciliation of %s failed: %s", execution.id, exc)
+        reconciliation = broker_service.Reconciliation("not_observed")
     audit_service.record(session, execution.id, "reconciliation", {"status": reconciliation.status})
 
     if reconciliation.status == "applied":

@@ -7,9 +7,14 @@ need no extra infrastructure. Each check returns a denial reason, or None.
 Reasons look like "control:<kind> <message>" (see `Execution.reason`).
 """
 
+import threading
+from collections import defaultdict
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from agentguard.config import settings
@@ -17,6 +22,29 @@ from agentguard.models import Agent, Execution, RequestPayload, Tool
 
 CONTROL_PREFIX = "control:"
 SPEND_COUNTED_OUTCOMES = ("success", "timeout")  # a timed-out call may have applied
+
+_local_locks: dict[str, threading.Lock] = defaultdict(threading.Lock)
+_local_locks_guard = threading.Lock()
+
+
+@contextmanager
+def agent_lock(session: Session, agent_id: str) -> Iterator[None]:
+    """Serialise one agent's control checks with the recording of its decision.
+
+    Rate limits and budgets are check-then-act: without this, concurrent calls (several
+    gateway replicas, or one replica's thread pool) could all pass a check that only one
+    should. On Postgres it's a row lock on the agent, held until the decision commits, so
+    it holds across every replica. SQLite (dev/test, one process) uses an in-process lock.
+    Tool execution happens after the decision commits, outside the lock.
+    """
+    if session.get_bind().dialect.name == "postgresql":
+        session.query(Agent.id).filter(Agent.id == agent_id).with_for_update().one_or_none()
+        yield  # released by the decision's commit (or any rollback)
+        return
+    with _local_locks_guard:
+        lock = _local_locks[agent_id]
+    with lock:
+        yield
 
 
 def _reason(kind: str, message: str) -> str:
@@ -40,7 +68,10 @@ def spent_last_24h(session: Session, agent_id: str) -> float:
         .join(Tool, Tool.id == Execution.tool_id)
         .filter(
             Execution.agent_id == agent_id,
-            Execution.outcome.in_(SPEND_COUNTED_OUTCOMES),
+            # Spent, or allowed and still executing: in-flight spend is reserved, so a burst of
+            # concurrent calls can't each see the old total and all pass.
+            Execution.outcome.in_(SPEND_COUNTED_OUTCOMES)
+            | ((Execution.decision == "allow") & (Execution.outcome == "not_attempted")),
             Execution.requested_at >= _since(24 * 3600),
             Tool.spend_arg.is_not(None),
         )
@@ -63,18 +94,19 @@ def pre_policy_denial(session: Session, agent_id: str, tool: Tool, args: dict[st
         return _reason("kill_switch", "global kill switch is engaged")
 
     agent = session.get(Agent, agent_id)
-    recent = session.query(Execution).filter(Execution.agent_id == agent_id)
-
-    denials = recent.filter(
-        Execution.decision == "deny",
-        Execution.requested_at >= _since(settings.breaker_window_seconds),
-        # Don't count our own control denials, or the breaker could never close.
-        (Execution.reason.is_(None)) | (~Execution.reason.startswith(CONTROL_PREFIX)),
-    ).count()
+    breaker_since = _since(settings.breaker_window_seconds)
+    minute_ago = _since(60)
+    # Both counts in one query over the agent's recent calls (ix_executions_agent_requested).
+    denials, calls = session.query(
+        func.coalesce(func.sum(case((
+            (Execution.requested_at >= breaker_since) & (Execution.decision == "deny")
+            # Don't count our own control denials, or the breaker could never close.
+            & ((Execution.reason.is_(None)) | (~Execution.reason.startswith(CONTROL_PREFIX))), 1), else_=0)), 0),
+        func.coalesce(func.sum(case((Execution.requested_at >= minute_ago, 1), else_=0)), 0),
+    ).filter(Execution.agent_id == agent_id, Execution.requested_at >= min(breaker_since, minute_ago)).one()
     if denials >= settings.breaker_threshold:
         return _reason("circuit_open", f"after {denials} denials in {settings.breaker_window_seconds}s")
 
-    calls = recent.filter(Execution.requested_at >= _since(60)).count()
     if calls >= agent.rate_limit_per_minute:
         return _reason("rate_limit", f"{agent.rate_limit_per_minute}/min exceeded")
 

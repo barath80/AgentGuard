@@ -18,6 +18,7 @@ matching authorized decision in the audit trail (confused-deputy guard).
 import hashlib
 import hmac
 import json
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
 
@@ -25,12 +26,22 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from agentguard.broker import executors
 from agentguard.broker import service as broker
 from agentguard.config import settings
 from agentguard.db import get_session
 from agentguard.models import Approval, Execution, Tool
 
-app = FastAPI(title="AgentGuard Broker")
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    # Build the target client before traffic arrives, not inside the first burst of requests.
+    if settings.target_backend == "helpdesk":
+        executors._http()
+    yield
+
+
+app = FastAPI(title="AgentGuard Broker", lifespan=_lifespan)
 
 
 def require_caller(authorization: str | None = Header(default=None)) -> None:
@@ -107,6 +118,7 @@ def execute(request: ExecuteRequest, response: Response, session: Session = Depe
 @app.post("/v1/reconcile", dependencies=[Depends(require_caller)])
 def reconcile(request: ReconcileRequest, session: Session = Depends(get_session)) -> dict[str, Any]:
     execution = session.get(Execution, request.execution_id)
+    session.close()  # don't hold a connection while asking the target; reconciliations come in storms
     if execution is None:
         raise HTTPException(status_code=404, detail="no recorded execution with this id")
     result = broker.reconcile_locally(request.executor_ref, request.execution_id)

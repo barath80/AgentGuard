@@ -5,6 +5,15 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     database_url: str = "sqlite:///./agentguard.db"
+    # Connections per process (Postgres). Budget: replicas × workers × (pool + overflow) must stay
+    # under the server's max_connections, or behind a pooler such as PgBouncer.
+    db_pool_size: int = 5
+    db_max_overflow: int = 10
+    # How long a gateway process may reuse its view of the active shadow policy (observational
+    # only, so a few seconds of lag after starting or stopping one is acceptable). 0 disables.
+    shadow_cache_seconds: float = 5.0
+    # Threads for synchronous request handlers (anyio's default is 40). Unset keeps the default.
+    request_threads: int | None = None
     redis_url: str = "redis://localhost:6379/0"
     environment: str = "development"
     approval_default_expiry_seconds: int = 900

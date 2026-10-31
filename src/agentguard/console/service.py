@@ -37,8 +37,10 @@ from agentguard.models import (
     Policy,
     PolicyRule,
     RequestPayload,
+    ShadowPolicy,
     Tool,
 )
+from agentguard.policy import shadow as shadow_policy
 from agentguard.replay.service import load_policy_file
 from agentguard.replay.service import replay as replay_traces
 from agentguard.replay.service import simulate as simulate_policy
@@ -763,6 +765,90 @@ def publish_policy(
     }
 
 
+# --- Policy shadow mode -------------------------------------------------------------
+
+DECISION_STRICTNESS = {"allow": 0, "approval_required": 1, "deny": 2}
+
+
+def _shadow_record(row: ShadowPolicy) -> dict[str, Any]:
+    return {
+        "id": row.id, "description": row.description, "rules": row.rules,
+        "started_by": row.started_by, "started_at": _iso(row.started_at),
+        "stopped_by": row.stopped_by, "stopped_at": _iso(row.stopped_at),
+    }
+
+
+def start_shadow(session: Session, principal: Principal, rules: list, *, description: str | None) -> dict[str, Any]:
+    """Start running `rules` silently next to the live policy. One shadow at a time: starting
+    a new one stops the current one."""
+    if not principal.can_operate:
+        raise ConsoleError("only operators can start a shadow policy", status_code=403)
+    _require_global_reader(principal)
+    now = datetime.now(UTC)
+    for current in session.query(ShadowPolicy).filter(ShadowPolicy.stopped_at.is_(None)):
+        current.stopped_at, current.stopped_by = now, principal.name
+    row = ShadowPolicy(description=description, rules=shadow_policy.rules_to_json(rules), started_by=principal.name,
+                       started_at=now)
+    session.add(row)
+    session.flush()
+    _record_action(session, principal, "shadow.started", "shadow_policy", row.id,
+                   {"description": description, "rules": len(rules)})
+    shadow_policy.invalidate()
+    return _shadow_record(row)
+
+
+def stop_shadow(session: Session, principal: Principal) -> dict[str, Any]:
+    if not principal.can_operate:
+        raise ConsoleError("only operators can stop a shadow policy", status_code=403)
+    row = session.query(ShadowPolicy).filter(ShadowPolicy.stopped_at.is_(None)).one_or_none()
+    if row is None:
+        raise ConsoleError("no shadow policy is running", status_code=404)
+    row.stopped_at, row.stopped_by = datetime.now(UTC), principal.name
+    _record_action(session, principal, "shadow.stopped", "shadow_policy", row.id, {})
+    shadow_policy.invalidate()
+    return _shadow_record(row)
+
+
+def shadow_report(session: Session, principal: Principal, *, limit: int = 25) -> dict[str, Any]:
+    """How the running (or most recent) shadow policy compares with the live one, call by call."""
+    _require_global_reader(principal)
+    row = session.query(ShadowPolicy).order_by(ShadowPolicy.started_at.desc()).first()
+    if row is None:
+        return {"shadow": None}
+    compared = session.query(Execution).filter(Execution.shadow_policy_id == row.id)
+    pairs = {
+        (live, shadow): n for live, shadow, n in compared.with_entities(
+            Execution.decision, Execution.shadow_decision, func.count()
+        ).group_by(Execution.decision, Execution.shadow_decision)
+    }
+    total = sum(pairs.values())
+    agree = sum(n for (live, shadow), n in pairs.items() if live == shadow)
+    # Looser: the shadow would let through (or ask less of) a call the live policy held back.
+    looser = sum(n for (live, shadow), n in pairs.items()
+                 if DECISION_STRICTNESS.get(shadow, 2) < DECISION_STRICTNESS.get(live, 2))
+    stricter = total - agree - looser
+    differing = (
+        compared.filter(Execution.decision != Execution.shadow_decision)
+        .order_by(Execution.requested_at.desc()).limit(limit).all()
+    )
+    names = _agent_names(session)
+    return {
+        "shadow": _shadow_record(row),
+        "running": row.stopped_at is None,
+        "compared": total,
+        "agreement": (agree / total) if total else None,
+        "looser": looser,
+        "stricter": stricter,
+        "matrix": [{"live": live, "shadow": shadow, "calls": n} for (live, shadow), n in sorted(pairs.items())],
+        "differences": [
+            {**_execution_summary(e, names), "shadow_decision": e.shadow_decision,
+             "direction": "looser" if DECISION_STRICTNESS.get(e.shadow_decision, 2)
+             < DECISION_STRICTNESS.get(e.decision, 2) else "stricter"}
+            for e in differing
+        ],
+    }
+
+
 def run_replay(read_session: Session, principal: Principal) -> dict[str, Any]:
     _require_global_reader(principal)
     report = replay_traces(read_session)
@@ -831,7 +917,13 @@ def list_anomalies(read_session: Session, principal: Principal, *, days: int = 7
 def agent_risk(read_session: Session, principal: Principal, hours: int) -> dict[str, Any]:
     """Advisory behavioural risk per agent from the anomaly model, if one is trained."""
     try:
-        from agentguard.ml.model import ModelUnavailable, agent_risk, load
+        from agentguard.ml.model import (
+            ModelUnavailable,
+            agent_risk_from_windows,
+            drift_report,
+            load,
+            recent_windows,
+        )
     except ImportError:
         return {"available": False, "reason": "ML extras not installed (pip install -e '.[ml]')", "agents": []}
     try:
@@ -840,7 +932,9 @@ def agent_risk(read_session: Session, principal: Principal, hours: int) -> dict[
         return {"available": False, "reason": str(exc), "agents": []}
     agents = {a.id: a for a in read_session.query(Agent).all()}
     rows = []
-    for row in agent_risk(read_session, model, hours=hours):
+    recent = recent_windows(read_session, model, hours=hours)
+    drift = drift_report(model, recent)
+    for row in agent_risk_from_windows(model, recent):
         agent = agents.get(row["agent_id"])
         if agent is None or not principal.can_read_tenant(agent.tenant_id):
             continue
@@ -857,6 +951,9 @@ def agent_risk(read_session: Session, principal: Principal, hours: int) -> dict[
             } or None,
         },
         "agents": rows,
+        # Drift describes the whole fleet's traffic; feature-level detail (fleet-wide averages)
+        # goes only to all-tenant readers, others see just whether the model is still current.
+        "drift": drift if principal.reads_all_tenants else {"status": drift["status"]},
     }
 
 

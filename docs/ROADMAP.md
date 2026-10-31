@@ -109,6 +109,17 @@ Deferred to later phases on purpose: agent/tool CRUD endpoints (only one seeded 
 - [x] Runtime database role separated from the schema owner; audit tables append-only for the runtime role, verified on Postgres (THREAT_MODEL #8)
 - [x] Pooled HTTP clients on the gateway→broker and broker→target hops. A new client per call cost about 230 ms each on Windows (TLS context setup), which made live calls take 0.6–2.4 s; pooled, a read through all three services takes about 90 ms
 
+## Phase 10 — Scale-out, shadow mode, drift
+
+- [x] Load-testing tool (`agentguard.evaluation.loadtest`) and a production-shaped benchmark on Postgres; results and sizing in [PERFORMANCE.md](PERFORMANCE.md)
+- [x] Seven concurrency defects found by load testing and fixed, each pinned by a test: idempotency race, budget race, rate-limit race, connection held across the broker call, thread/connection-pool deadlock, HTTP client creation herd, reconciliation holding connections and failing as 500s
+- [x] Hot path: commits per call 5 → 2 (decision and audit event atomic), cached rules for immutable policy versions, (agent, time) index, configurable DB pools and request threads
+- [x] Load balancer: nginx `gateway-lb` in Compose with least-connections and idempotency-safe retries; gateway replicas scale with `GATEWAY_REPLICAS`; Helm pool sizing per pod
+- [x] Policy shadow mode: run a proposal beside the live policy on real traffic, record what it would have decided, report agreement and every difference; can't affect a live decision (adversarial tests)
+- [x] Model drift monitoring: training distribution stored with the model, PSI per feature on live windows, shown on the model card; the nightly Kubernetes job checks drift and fails on it instead of blindly retraining
+- [x] Retrained on a second labelled dataset with four new attack types. The first model caught 17% of slow scraping and 36% of ticket flooding before retraining; the retrained model scores PR-AUC 1.00, precision 0.92, recall 1.00 on held-out data (`docs/EVALUATION.md`)
+- [ ] Re-run the scale-out benchmark (4/2/2, 8/4/4) on AC power since fixing defects 6–7 (`docs/PERFORMANCE.md`)
+
 ## Status
 
 Phases 0–9 are implemented and tested, including on Postgres 16. What's left needs something this environment doesn't have, and none of it blocks the system working correctly:

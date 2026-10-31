@@ -150,6 +150,23 @@ def load_rules(session: Session, version: int, *, scope: str = "global") -> list
     return None if policy is None else [RuleSpec.from_orm(r) for r in policy.rules]
 
 
+# A published policy's rules never change (a change is a new version with a new id), so they
+# can be cached by policy id. Which policy is active is still read on every call, so a newly
+# published version takes effect immediately on every replica.
+_rules_cache: dict[str, list[RuleSpec]] = {}
+_RULES_CACHE_MAX = 64
+
+
+def _rules_for(policy: Policy) -> list[RuleSpec]:
+    rules = _rules_cache.get(policy.id)
+    if rules is None:
+        rules = sorted((RuleSpec.from_orm(r) for r in policy.rules), key=lambda r: r.priority)
+        if len(_rules_cache) >= _RULES_CACHE_MAX:
+            _rules_cache.clear()
+        _rules_cache[policy.id] = rules
+    return rules
+
+
 def evaluate(session: Session, ctx: PolicyContext, *, scope: str = "global") -> PolicyDecision:
     policy = (
         session.query(Policy)
@@ -160,4 +177,4 @@ def evaluate(session: Session, ctx: PolicyContext, *, scope: str = "global") -> 
         # Fail closed: no active policy means we cannot evaluate at all.
         return PolicyDecision(decision="deny", policy_version=-1, matched_rule_id=None)
 
-    return evaluate_rules([RuleSpec.from_orm(r) for r in policy.rules], policy.version, ctx)
+    return evaluate_rules(_rules_for(policy), policy.version, ctx)

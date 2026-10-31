@@ -9,7 +9,7 @@ The chart in `agentguard/` runs the same topology as `docker-compose.yml`, harde
 | `helpdesk` (optional) | The ticketing/billing target | Its own DB URL, credential hashes | its database |
 | `console` | Web UI (nginx) | nothing secret | gateway |
 | `migrate` Job | `alembic upgrade head` then runtime-role grants, pre-install/pre-upgrade hook | Schema-owner DB URL | database |
-| `train-anomaly` CronJob | Retrains the advisory anomaly model | DB URL (read-only connection) | database |
+| `anomaly-drift` CronJob | Checks live traffic against the served model's training data; fails (alerts) on drift | DB URL (read-only connection) | database |
 
 Network policies start from default-deny. The result: only the broker can reach the target system, and only the gateway can reach the broker. So "only the broker holds target credentials" is enforced at the network layer as well as in code (THREAT_MODEL #7).
 
@@ -53,5 +53,5 @@ CI runs both on every change (`.github/workflows/ci.yml`, `helm` job).
 
 - **Traffic inside the cluster is plain HTTP.** Run a service mesh with mTLS (Istio, Linkerd) or terminate TLS per service if your threat model includes in-cluster sniffing. The broker's service token and its re-check of each execution still hold without a mesh.
 - **NetworkPolicies need a CNI that enforces them** (Calico, Cilium, most managed clusters). On one that doesn't, they are silently ignored.
-- **The model volume is `ReadWriteMany`.** Pick a storage class that supports it (EFS, Filestore, Azure Files), or set `anomalyModel.training.enabled=false` and the console shows "no model yet".
+- **The model volume is `ReadWriteMany`.** Pick a storage class that supports it (EFS, Filestore, Azure Files), or set `anomalyModel.driftCheck.enabled=false`. Put the model evaluated in the notebook on this volume; without one the console shows "no model yet".
 - **`database.egressCIDR` and `networkPolicies.idpEgressCIDR` default wide.** Narrow them to your managed Postgres subnet and your IdP.

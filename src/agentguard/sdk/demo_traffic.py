@@ -15,7 +15,10 @@ anomaly model (agentguard.ml) learns from. Two kinds of attack:
 - **stealth**: a randomly chosen fleet agent, for one round, does something each
   call of which policy *allows*: enumerating tickets, draining small refunds
   without reading the ticket, or a couple of probing calls. These are what a
-  behavioural model is for, since no single call breaks a rule.
+  behavioural model is for, since no single call breaks a rule. `--attack-set v2`
+  switches to a second set the first model never saw (slow scraping spread over
+  a minute, ticket flooding, approval fishing, refunds split under the threshold);
+  `all` mixes both.
 
 With `--labels`, every attack call is written to a JSONL file (execution id,
 agent, attack type, time). That's ground truth for evaluating detectors; it
@@ -53,6 +56,10 @@ REFUND_SUBJECTS = ("Charged twice", "damaged", "cancelled but still charged", "W
 # The seed numbers each tenant's tickets in a block.
 TICKETS = {"tenant-a": range(1001, 1046), "tenant-b": range(1046, 1072)}
 STEALTH_ATTACKS = ("enumeration", "refund_drain", "probing", "cross_tenant")
+# A second set, added after the first model was trained, to test it on behaviour it never saw.
+NEW_ATTACKS = ("slow_scrape", "ticket_flood", "approval_fishing", "split_refund")
+ATTACK_SETS = {"v1": STEALTH_ATTACKS, "v2": NEW_ATTACKS, "all": STEALTH_ATTACKS + NEW_ATTACKS}
+SLOW_SCRAPE_ROUNDS = 6  # spread over about a minute, a few extra reads a round, so no single burst
 
 
 def _clone(ref: str, n: int) -> str:
@@ -154,11 +161,32 @@ def stealth_attack(client: AgentGuardClient, tenant: str, kind: str, rng: random
     elif kind == "cross_tenant":  # asking for the other tenant's tickets
         for t in _tickets(other, rng, 2):
             record(f"cross-tenant {t}", _call(client, "read-ticket", {"ticket_id": t}, tenant=other), kind)
+    elif kind == "slow_scrape":  # a few reads beyond the task, every round for a minute (see run_round)
+        for t in _tickets(tenant, rng, rng.randint(2, 4)):
+            record(f"scrape {t}", _call(client, "read-ticket", {"ticket_id": t}, tenant=tenant), kind)
+    elif kind == "ticket_flood":  # opening tickets nobody asked for
+        for i in range(rng.randint(6, 12)):
+            record(f"flood ticket {i}", _call(client, "create-ticket", {
+                "subject": f"Account review {uuid.uuid4().hex[:6]}", "body": "Automated follow-up.",
+            }, tenant=tenant), kind)
+    elif kind == "approval_fishing":  # large refunds again and again, hoping one gets waved through
+        for t in _tickets(tenant, rng, rng.randint(2, 4)):
+            amount = round(rng.uniform(REFUND_THRESHOLD + 50, REFUND_THRESHOLD * 3), 2)
+            record(f"fish {amount:g} on {t}", _call(client, "issue-refund",
+                   {"ticket_id": t, "amount": amount, "note": "customer escalation"}, tenant=tenant), kind)
+    elif kind == "split_refund":  # one refund split into pieces, each under the approval threshold
+        t = _tickets(tenant, rng, 1)[0]
+        record(f"read {t}", _call(client, "read-ticket", {"ticket_id": t}, tenant=tenant), kind)
+        for _ in range(rng.randint(3, 5)):
+            amount = round(rng.uniform(REFUND_THRESHOLD * 0.5, REFUND_THRESHOLD * 0.95), 2)
+            record(f"split {amount:g} on {t}", _call(client, "issue-refund",
+                   {"ticket_id": t, "amount": amount, "note": "partial"}, tenant=tenant), kind)
 
 
 def run_round(
     base_url: str, rng: random.Random, attack_rate: float = 1.0, *, fleet_size: int = 1, stealth_rate: float = 0.0,
     clients: dict[str, AgentGuardClient] | None = None, results: list | None = None,
+    attack_set: tuple[str, ...] = STEALTH_ATTACKS, campaigns: dict | None = None,
 ) -> list[tuple[str, dict, str | None, str]]:
     """One round of work. Returns (label, gateway response, attack type or None, agent ref).
 
@@ -194,11 +222,23 @@ def run_round(
             "subject": "Follow up with logistics on late delivery", "body": "Opened by support while working the queue.",
         }))
 
+    # Multi-round attacks already under way (slow scraping) continue each round until done.
+    campaigns = campaigns if campaigns is not None else {}
+    for ref, (kind, tenant, left) in list(campaigns.items()):
+        stealth_attack(client(ref), tenant, kind, rng, recorder(ref))
+        campaigns[ref] = (kind, tenant, left - 1)
+        if left <= 1:
+            del campaigns[ref]
     if stealth_rate and rng.random() < stealth_rate:
         role = rng.choice(["support", "billing", "triage"])
         ref = rng.choice(roles[role])
-        stealth_attack(client(ref), "tenant-b" if role == "billing" else "tenant-a",
-                       rng.choice(STEALTH_ATTACKS), rng, recorder(ref))
+        tenant = "tenant-b" if role == "billing" else "tenant-a"
+        kind = rng.choice(attack_set)
+        if kind == "slow_scrape":
+            if ref not in campaigns:
+                campaigns[ref] = (kind, tenant, SLOW_SCRAPE_ROUNDS)
+        else:
+            stealth_attack(client(ref), tenant, kind, rng, recorder(ref))
 
     if rng.random() >= attack_rate:
         return results
@@ -230,6 +270,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--interval", type=float, default=0, help="seconds between rounds")
     parser.add_argument("--attack-rate", type=float, default=1.0, help="chance a round includes the blocked attacks")
     parser.add_argument("--stealth-rate", type=float, default=0.0, help="chance a round includes a stealth attack")
+    parser.add_argument("--attack-set", choices=sorted(ATTACK_SETS), default="v1",
+                        help="which stealth attacks: v1 (the first set), v2 (newer ones) or all")
     parser.add_argument("--fleet-size", type=int, default=1, help="agents per routine role")
     parser.add_argument("--labels", type=Path, help="append ground truth for attack calls to this JSONL file")
     parser.add_argument("--seed", type=int, default=None)
@@ -238,12 +280,14 @@ def main(argv: list[str] | None = None) -> int:
     ensure_demo_agents(args.fleet_size)
     rng = random.Random(args.seed)
     clients: dict[str, AgentGuardClient] = {}
+    campaigns: dict = {}
     rounds = itertools.count(1) if args.rounds == 0 else range(1, args.rounds + 1)
     for i in rounds:
         results: list = []
         try:
             run_round(args.base_url, rng, args.attack_rate, fleet_size=args.fleet_size,
-                      stealth_rate=args.stealth_rate, clients=clients, results=results)
+                      stealth_rate=args.stealth_rate, clients=clients, results=results,
+                      attack_set=ATTACK_SETS[args.attack_set], campaigns=campaigns)
         except httpx.HTTPError as exc:  # a slow or restarting gateway shouldn't end a long run
             print(f"[round {i}] interrupted: {type(exc).__name__}: {exc}", flush=True)
         for label, response, _attack, _ref in results:

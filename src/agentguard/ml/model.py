@@ -28,6 +28,7 @@ normal; it needs enough windows to mean anything (training refuses below
 
 import argparse
 import hashlib
+import json
 import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -42,7 +43,7 @@ from agentguard.config import settings
 from agentguard.ml.detectors import DETECTORS, Detector
 from agentguard.ml.features import FEATURES, LOG_SCALED, WINDOW, Window, build_windows
 
-MODEL_VERSION = 4
+MODEL_VERSION = 5
 # Smallest deviation unit per feature, so a feature that never varied in training
 # still has a meaningful scale: about one event (log1p(1) ≈ 0.69), or 10 points of a rate.
 SCALE_FLOOR = np.array([0.5 if f in LOG_SCALED else 0.1 if f.endswith("_rate") else 1.0 for f in FEATURES])
@@ -71,6 +72,9 @@ class TrainedModel:
     # Whether the robust per-feature deviation check also raises risk. It catches never-seen
     # behaviour but can add false alarms; the notebook measures that and decides.
     use_deviation: bool = True
+    # Per-feature distribution of the training windows (decile bins and their shares), so live
+    # traffic can be checked for drift away from what the model learned (`drift_report`).
+    reference: dict[str, Any] | None = None
 
     @property
     def detector_name(self) -> str:
@@ -130,7 +134,63 @@ def train(
     model.thresholds = thresholds or (
         float(np.quantile(model.train_scores, 0.95)), float(np.quantile(model.train_scores, 0.99)),
     )
+    model.reference = _reference(x)
     return model
+
+
+# --- Drift: does live traffic still look like the training data? ---------------------------
+
+DRIFT_MODERATE = 0.10  # Population Stability Index: < 0.1 stable, 0.1–0.25 moderate, >= 0.25 significant
+DRIFT_SIGNIFICANT = 0.25
+_PSI_EPSILON = 1e-4
+
+
+def _bins(column: np.ndarray, edges: list[float]) -> np.ndarray:
+    counts = np.bincount(np.searchsorted(edges, column, side="right"), minlength=len(edges) + 1)
+    return counts / max(len(column), 1)
+
+
+def _reference(x: np.ndarray) -> dict[str, Any]:
+    edges = [sorted(set(np.quantile(x[:, j], np.linspace(0.1, 0.9, 9)).round(6).tolist())) for j in range(x.shape[1])]
+    return {
+        "edges": edges,
+        "expected": [_bins(x[:, j], edges[j]).tolist() for j in range(x.shape[1])],
+        "mean": x.mean(axis=0).tolist(),
+    }
+
+
+def _psi(expected: np.ndarray, actual: np.ndarray) -> float:
+    e = np.clip(expected, _PSI_EPSILON, None)
+    a = np.clip(actual, _PSI_EPSILON, None)
+    return float(np.sum((a - e) * np.log(a / e)))
+
+
+# PSI is biased upward on small samples. Measured on draws from an unchanged distribution, the
+# median PSI is 0.25 at 30 windows (a false "drifted" half the time) and the 95th percentile is
+# 0.077 at 200, under the 0.1 "moderate" line. So below 200 windows there's no verdict at all.
+DRIFT_MIN_WINDOWS = 200
+
+
+def drift_report(model: TrainedModel, windows: list[Window], *, min_windows: int = DRIFT_MIN_WINDOWS) -> dict[str, Any]:
+    """Population Stability Index of each feature, live windows against the training windows.
+    Drift doesn't mean an attack; it means the model's notion of normal is going stale and its
+    held-out numbers no longer describe it, so it should be retrained and re-evaluated."""
+    if model.reference is None:
+        return {"status": "unavailable", "reason": "model has no reference distribution", "windows": len(windows)}
+    if len(windows) < min_windows:
+        return {"status": "insufficient_data", "windows": len(windows), "min_windows": min_windows}
+    x = np.array([w.vector() for w in windows], dtype=float)
+    ref = model.reference
+    scores = []
+    for j, feature in enumerate(FEATURES):
+        psi = _psi(np.asarray(ref["expected"][j]), _bins(x[:, j], ref["edges"][j]))
+        scores.append({"feature": feature, "psi": round(psi, 3),
+                       "train_mean": round(float(ref["mean"][j]), 3), "live_mean": round(float(x[:, j].mean()), 3)})
+    scores.sort(key=lambda s: -s["psi"])
+    worst = scores[0]["psi"]
+    status = "drifted" if worst >= DRIFT_SIGNIFICANT else "moderate" if worst >= DRIFT_MODERATE else "stable"
+    return {"status": status, "windows": len(windows), "max_psi": worst,
+            "features": [s for s in scores[:3] if s["psi"] >= DRIFT_MODERATE] or scores[:1]}
 
 
 def save(model: TrainedModel, path: Path) -> str:
@@ -189,10 +249,17 @@ def score_windows(model: TrainedModel, windows: list[Window]) -> list[dict[str, 
     return out
 
 
+def recent_windows(session: Session, model: TrainedModel, *, hours: int = 24) -> list[Window]:
+    return build_windows(session, since=datetime.now(UTC) - timedelta(hours=hours), window=model.window)
+
+
 def agent_risk(session: Session, model: TrainedModel, *, hours: int = 24) -> list[dict[str, Any]]:
-    """Per agent: its riskiest window in the last `hours`, with how many of its windows were
-    flagged, so one bad minute reads differently from an hour of them."""
-    since = datetime.now(UTC) - timedelta(hours=hours)
+    return agent_risk_from_windows(model, recent_windows(session, model, hours=hours))
+
+
+def agent_risk_from_windows(model: TrainedModel, recent: list[Window]) -> list[dict[str, Any]]:
+    """Per agent: its riskiest window, with how many of its windows were flagged, so one bad
+    minute reads differently from an hour of them."""
     worst: dict[str, dict[str, Any]] = {}
     windows: dict[str, int] = {}
     flagged: dict[str, int] = {}
@@ -200,7 +267,7 @@ def agent_risk(session: Session, model: TrainedModel, *, hours: int = 24) -> lis
     def rank(row: dict[str, Any]) -> tuple[int, float]:
         return LEVELS.index(row["risk"]), row["score"]
 
-    for row in score_windows(model, build_windows(session, since=since, window=model.window)):
+    for row in score_windows(model, recent):
         agent = row["agent_id"]
         windows[agent] = windows.get(agent, 0) + 1
         flagged[agent] = flagged.get(agent, 0) + (row["risk"] != "normal")
@@ -225,6 +292,8 @@ def main(argv: list[str] | None = None) -> int:
     tr.add_argument("--since", type=datetime.fromisoformat, default=None,
                     help="only learn from traces after this time (ISO 8601, UTC): start of a period you trust")
     sub.add_parser("score", help="show the riskiest recent window per agent")
+    dr = sub.add_parser("drift", help="compare recent traffic with the training data; exit 3 if it has drifted")
+    dr.add_argument("--hours", type=int, default=24)
     args = parser.parse_args(argv)
 
     session = read_only_session(args.database_url)
@@ -252,6 +321,10 @@ def main(argv: list[str] | None = None) -> int:
         except ModelUnavailable as exc:
             print(exc, file=sys.stderr)
             return 1
+        if args.command == "drift":
+            report = drift_report(model, recent_windows(session, model, hours=args.hours))
+            print(json.dumps(report, indent=2))
+            return 3 if report["status"] == "drifted" else 0
         for row in agent_risk(session, model):
             print(f"{row['agent_id'][:8]}  {row['risk']:<9} p{row['percentile']*100:.0f}  {row['drivers']}")
         return 0
